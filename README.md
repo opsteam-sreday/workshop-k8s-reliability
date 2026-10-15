@@ -138,6 +138,11 @@ scripts/validate.sh   # critérios de aceitação baseline → .workshop/validat
 > Se o `docker login`/push travar (credential helper do Docker Desktop), use
 > `DOCKER_ISOLATED_CONFIG=true scripts/deploy.sh` — um `DOCKER_CONFIG` temporário sem credsStore.
 
+**BFF pública:** todo cluster expõe a BFF num NLB internet-facing (`bff-api-public`, porta 80, **sem autenticação**,
+aberto para `0.0.0.0/0`); Orders e Inventory continuam internas. O `deploy.sh` imprime a URL
+(`http://<nlb>/docs` = Swagger); depois: `kubectl -n ecommerce get svc bff-api-public`. Swagger de Orders/Inventory:
+`kubectl -n ecommerce port-forward svc/orders-api 8081:8080` → `http://localhost:8081/docs`.
+
 Acesso ao HyperDX (credenciais geradas em `.workshop/hyperdx-credentials.json`):
 
 ```bash

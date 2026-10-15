@@ -9,3 +9,6 @@ spec:
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: loadtest}}
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ecommerce}}
       ports: [{port: 8080, protocol: TCP}]
+    # Internet via NLB (service-public.yaml): com externalTrafficPolicy Local a origem é o IP do cliente.
+    - from: [{ipBlock: {cidr: 0.0.0.0/0}}]
+      ports: [{port: 8080, protocol: TCP}]

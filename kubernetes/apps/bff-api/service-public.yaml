@@ -1,0 +1,18 @@
+# Entrada pública do workshop: NLB internet-facing para a BFF (Orders e Inventory continuam internas, só a BFF
+# fala com elas). Criado pelo cloud provider do EKS, sem AWS Load Balancer Controller, nas subnets públicas
+# (tag kubernetes.io/role/elb). Sem autenticação: aberto para a internet. O teardown remove o NLB ao apagar o
+# namespace ecommerce. URL: kubectl -n ecommerce get svc bff-api-public (http://<hostname>/docs).
+apiVersion: v1
+kind: Service
+metadata:
+  name: bff-api-public
+  namespace: ecommerce
+  labels: {app.kubernetes.io/name: bff-api}
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags: workshop=kubernetes-reliability
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local   # preserva o IP do cliente (NetworkPolicy e logs veem a origem real)
+  selector: {app.kubernetes.io/name: bff-api}
+  ports: [{name: http, port: 80, targetPort: http}]   # a porta admin (8081, loopback) NÃO é exposta
