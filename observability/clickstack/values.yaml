@@ -1,0 +1,71 @@
+# ClickStack (chart clickstack/clickstack 3.4.0) — ClickHouse + HyperDX + OTel Collector + MongoDB.
+# Todos os componentes rodam no node group "observability" (taint workload=observability),
+# isolados dos experimentos de pressão de CPU/memória/preemption.
+x-obs-scheduling: &obs
+  nodeSelector: {workload: observability}
+  tolerations:
+    - {key: workload, operator: Equal, value: observability, effect: NoSchedule}
+
+hyperdx:
+  config:
+    # Acesso via `kubectl port-forward svc/clickstack-app 3000:3000` => http://localhost:3000
+    FRONTEND_URL: "http://localhost:3000"
+    HYPERDX_OTEL_EXPORTER_TABLES_TTL: "72h"   # workshop: retenção curta
+    USAGE_STATS_ENABLED: "false"
+  service:
+    apiPort:
+      enabled: true   # expõe a External API v2 (porta 8000) usada por observability/alerts/create-alerts.sh
+  deployment:
+    <<: *obs
+    resources:
+      requests: {cpu: 250m, memory: 1Gi}
+      limits: {memory: 2Gi}
+
+clickhouse:
+  keeper:
+    spec:
+      podTemplate:
+        <<: *obs
+      dataVolumeClaimSpec:
+        storageClassName: gp3
+  cluster:
+    spec:
+      podTemplate:
+        <<: *obs
+      containerTemplate:
+        resources:
+          requests: {cpu: 500m, memory: 4Gi}
+          limits: {memory: 4Gi}
+      dataVolumeClaimSpec:
+        storageClassName: gp3
+        resources:
+          requests: {storage: 20Gi}
+
+mongodb:
+  spec:
+    statefulSet:
+      spec:
+        template:
+          spec:
+            <<: *obs
+            containers:   # padrão do operador: 1 CPU por container — reduzido para o laboratório
+              - name: mongod
+                resources:
+                  requests: {cpu: 200m, memory: 512Mi}
+                  limits: {memory: 1Gi}
+              - name: mongodb-agent
+                resources:
+                  requests: {cpu: 50m, memory: 128Mi}
+                  limits: {memory: 256Mi}
+        volumeClaimTemplates:
+          - metadata: {name: data-volume}
+            spec:
+              storageClassName: gp3
+              accessModes: [ReadWriteOnce]
+              resources: {requests: {storage: 5Gi}}
+
+otel-collector:
+  <<: *obs
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {memory: 1Gi}

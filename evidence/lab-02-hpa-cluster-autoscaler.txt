@@ -1,0 +1,33 @@
+# LAB 02 — 2026-10-14T16:19:32Z
+## HPA
+Events:
+  Type     Reason                        Age                  From                       Message
+  ----     ------                        ----                 ----                       -------
+  Warning  FailedGetResourceMetric       13m (x2 over 21m)    horizontal-pod-autoscaler  failed to get cpu utilization: unable to get metrics for resource cpu: no metrics returned from resource metrics API
+  Warning  FailedComputeMetricsReplicas  13m (x2 over 21m)    horizontal-pod-autoscaler  invalid metrics (1 invalid out of 1), first error is: failed to get cpu resource metric value: failed to get cpu utilization: unable to get metrics for resource cpu: no metrics returned from resource metrics API
+  Warning  FailedGetResourceMetric       9m20s (x3 over 21m)  horizontal-pod-autoscaler  failed to get cpu utilization: did not receive metrics for targeted pods (pods might be unready)
+  Warning  FailedComputeMetricsReplicas  9m20s (x3 over 21m)  horizontal-pod-autoscaler  invalid metrics (1 invalid out of 1), first error is: failed to get cpu resource metric value: failed to get cpu utilization: did not receive metrics for targeted pods (pods might be unready)
+  Normal   SuccessfulRescale             8m50s                horizontal-pod-autoscaler  New size: 6; reason: cpu resource utilization (percentage of request) above target
+  Normal   SuccessfulRescale             8m35s                horizontal-pod-autoscaler  New size: 9; reason: cpu resource utilization (percentage of request) above target
+  Normal   SuccessfulRescale             8m20s                horizontal-pod-autoscaler  New size: 12; reason: cpu resource utilization (percentage of request) above target
+## Eventos FailedScheduling / TriggeredScaleUp
+2026-10-14T16:11:52Z   orders-api-7cf577fd69-96wkc   0/4 nodes are available: 2 Insufficient cpu, 2 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/4 nodes are available: 2 Insufficient cpu, 2 Preemption is not helpful for scheduling.
+2026-10-14T16:11:14Z   orders-api-7cf577fd69-dc5pj   0/3 nodes are available: 1 node(s) had untolerated taint(s), 2 Insufficient cpu. no new claims to deallocate, preemption: 0/3 nodes are available: 1 Preemption is not helpful for scheduling, 2 Insufficient cpu.
+2026-10-14T16:11:52Z   orders-api-7cf577fd69-dc5pj   0/4 nodes are available: 2 Insufficient cpu, 2 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/4 nodes are available: 2 Insufficient cpu, 2 Preemption is not helpful for scheduling.
+2026-10-14T16:11:14Z   orders-api-7cf577fd69-kjvwk   0/3 nodes are available: 1 node(s) had untolerated taint(s), 2 Insufficient cpu. no new claims to deallocate, preemption: 0/3 nodes are available: 1 Preemption is not helpful for scheduling, 2 Insufficient cpu.
+2026-10-14T16:11:52Z   orders-api-7cf577fd69-kjvwk   0/4 nodes are available: 2 Insufficient cpu, 2 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/4 nodes are available: 2 Insufficient cpu, 2 Preemption is not helpful for scheduling.
+TIME                   OBJ                           MSG
+2026-10-14T16:11:24Z   orders-api-7cf577fd69-96wkc   pod triggered scale-up: [{eks-apps-98d09d77-039e-b508-477b-9cb00eb8c805 2->3 (max: 5)}]
+2026-10-14T16:11:24Z   orders-api-7cf577fd69-dc5pj   pod triggered scale-up: [{eks-apps-98d09d77-039e-b508-477b-9cb00eb8c805 2->3 (max: 5)}]
+2026-10-14T16:11:24Z   orders-api-7cf577fd69-kjvwk   pod triggered scale-up: [{eks-apps-98d09d77-039e-b508-477b-9cb00eb8c805 2->3 (max: 5)}]
+## Cluster Autoscaler (scale-up)
+I1014 16:18:56.676342       1 static_autoscaler.go:795] Scale down status: lastScaleUpTime=2026-10-14 16:11:24.660430603 +0000 UTC m=+3813.977740469 lastScaleDownDeleteTime=2026-10-14 14:07:52.295417138 +0000 UTC m=-3598.387272976 lastScaleDownFailTime=2026-10-14 14:07:52.295417138 +0000 UTC m=-3598.387272976 scaleDownForbidden=false scaleDownInCooldown=false
+I1014 16:19:06.690335       1 static_autoscaler.go:795] Scale down status: lastScaleUpTime=2026-10-14 16:11:24.660430603 +0000 UTC m=+3813.977740469 lastScaleDownDeleteTime=2026-10-14 14:07:52.295417138 +0000 UTC m=-3598.387272976 lastScaleDownFailTime=2026-10-14 14:07:52.295417138 +0000 UTC m=-3598.387272976 scaleDownForbidden=false scaleDownInCooldown=false
+I1014 16:19:16.703737       1 static_autoscaler.go:795] Scale down status: lastScaleUpTime=2026-10-14 16:11:24.660430603 +0000 UTC m=+3813.977740469 lastScaleDownDeleteTime=2026-10-14 14:07:52.295417138 +0000 UTC m=-3598.387272976 lastScaleDownFailTime=2026-10-14 14:07:52.295417138 +0000 UTC m=-3598.387272976 scaleDownForbidden=false scaleDownInCooldown=false
+I1014 16:19:26.821686       1 static_autoscaler.go:795] Scale down status: lastScaleUpTime=2026-10-14 16:11:24.660430603 +0000 UTC m=+3813.977740469 lastScaleDownDeleteTime=2026-10-14 14:07:52.295417138 +0000 UTC m=-3598.387272976 lastScaleDownFailTime=2026-10-14 14:07:52.295417138 +0000 UTC m=-3598.387272976 scaleDownForbidden=false scaleDownInCooldown=false
+I1014 16:19:36.837610       1 static_autoscaler.go:795] Scale down status: lastScaleUpTime=2026-10-14 16:11:24.660430603 +0000 UTC m=+3813.977740469 lastScaleDownDeleteTime=2026-10-14 14:07:52.295417138 +0000 UTC m=-3598.387272976 lastScaleDownFailTime=2026-10-14 14:07:52.295417138 +0000 UTC m=-3598.387272976 scaleDownForbidden=false scaleDownInCooldown=false
+## Nós
+NAME                              CREATED
+ip-192-168-118-236.ec2.internal   2026-10-14T15:01:41Z
+ip-192-168-67-124.ec2.internal    2026-10-14T16:11:49Z
+ip-192-168-87-71.ec2.internal     2026-10-14T15:01:42Z

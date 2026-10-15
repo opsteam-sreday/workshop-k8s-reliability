@@ -109,7 +109,7 @@ def instrument_fastapi(app) -> None:
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
     # Health checks não geram spans nem métricas HTTP (evita ruído e custo).
-    FastAPIInstrumentor.instrument_app(app, excluded_urls="health/.*")
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="health/.*", exclude_spans=["receive", "send"])
 
 
 # --------------------------------------------------------------------------------------

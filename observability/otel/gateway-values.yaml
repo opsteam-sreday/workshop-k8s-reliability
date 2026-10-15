@@ -1,0 +1,76 @@
+# OpenTelemetry Collector GATEWAY (Deployment) — chart open-telemetry/opentelemetry-collector 0.176.0
+#
+# Recebe OTLP das 3 APIs, coleta métricas de cluster (k8s_cluster: Pending Pods, restarts,
+# réplicas desejadas/atuais) e eventos Kubernetes (FailedScheduling, Preempted, OOMKilling...)
+# e exporta para o OTel Collector do ClickStack com a ingestion key no header `authorization`.
+mode: deployment
+fullnameOverride: otel-gateway
+replicaCount: 1
+image:
+  repository: otel/opentelemetry-collector-k8s
+nodeSelector: {workload: observability}
+tolerations:
+  - {key: workload, operator: Equal, value: observability, effect: NoSchedule}
+resources:
+  requests: {cpu: 200m, memory: 256Mi}
+  limits: {memory: 512Mi}
+
+presets:
+  kubernetesAttributes:
+    enabled: true          # enriquece OTLP das APIs com k8s.pod.name, k8s.deployment.name, k8s.node.name...
+  clusterMetrics:
+    enabled: true          # receiver k8s_cluster
+  kubernetesEvents:
+    enabled: true          # eventos como logs
+
+extraEnvs:
+  - name: CLICKSTACK_INGESTION_KEY
+    valueFrom:
+      secretKeyRef: {name: clickstack-ingestion, key: api-key}
+  - name: K8S_CLUSTER_NAME
+    valueFrom:
+      configMapKeyRef: {name: otel-cluster-info, key: cluster-name}
+
+config:
+  receivers:
+    jaeger: null
+    zipkin: null
+    prometheus: null
+    k8s_cluster:
+      collection_interval: 15s
+      node_conditions_to_report: [Ready, MemoryPressure, DiskPressure, PIDPressure]
+      allocatable_types_to_report: [cpu, memory]
+  processors:
+    batch:
+      send_batch_size: 2048
+      timeout: 2s
+    resource/cluster:
+      attributes:
+        - {key: k8s.cluster.name, value: "${env:K8S_CLUSTER_NAME}", action: upsert}
+  exporters:
+    debug: null
+    otlphttp/clickstack:
+      endpoint: http://clickstack-otel-collector.observability.svc.cluster.local:4318
+      headers:
+        authorization: "${env:CLICKSTACK_INGESTION_KEY}"
+      compression: gzip
+      sending_queue:
+        enabled: true
+        queue_size: 5000
+      retry_on_failure:
+        enabled: true
+        max_elapsed_time: 120s
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, k8sattributes, resource/cluster, batch]
+        exporters: [otlphttp/clickstack]
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, k8sattributes, resource/cluster, batch]
+        exporters: [otlphttp/clickstack]
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, k8sattributes, resource/cluster, batch]
+        exporters: [otlphttp/clickstack]

@@ -1,0 +1,4 @@
+-r orders-api/requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0
+moto[server,dynamodb]==5.2.4

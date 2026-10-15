@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from opentelemetry import trace
 
-from .context import current_request_id
+from .context import current_request_id, http_scope_var
 
 # Atributos padrão de LogRecord que não devem ser repetidos como campos extras.
 _RESERVED = set(vars(logging.LogRecord("", 0, "", 0, "", (), None)).keys()) | {"message", "asctime", "taskName"}
@@ -62,6 +62,14 @@ class ContextFilter(logging.Filter):
         if not getattr(record, "request_id", None):
             record.request_id = current_request_id()
         record.level = level_name(record.levelno)
+        scope = http_scope_var.get()
+        if scope is not None:
+            from .http import resolve_route
+
+            if not hasattr(record, "http.route"):
+                setattr(record, "http.route", resolve_route(scope))
+            if not hasattr(record, "http.request.method"):
+                setattr(record, "http.request.method", scope.get("method"))
         return True
 
 

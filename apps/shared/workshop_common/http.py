@@ -12,7 +12,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.routing import Match
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .context import request_id_var
+from .context import http_scope_var, request_id_var
 
 log = logging.getLogger("http.server")
 
@@ -62,6 +62,7 @@ class RequestContextMiddleware:
                 break
         request_id = incoming if incoming and _REQUEST_ID_RE.match(incoming) else str(uuid.uuid4())
         token = request_id_var.set(request_id)
+        scope_token = http_scope_var.set(scope)
 
         state = {"status": 500, "started": False}
 
@@ -76,10 +77,7 @@ class RequestContextMiddleware:
         try:
             await self.app(scope, receive, send_wrapper)
         except Exception:
-            log.exception(
-                "Unhandled exception",
-                extra={"http.request.method": scope.get("method"), "http.route": resolve_route(scope)},
-            )
+            log.exception("Unhandled exception", extra={"http.response.status_code": 500})
             if not state["started"]:
                 body = json.dumps(error_body("INTERNAL_ERROR", "Erro interno inesperado")).encode()
                 await send_wrapper(
@@ -107,6 +105,7 @@ class RequestContextMiddleware:
                     },
                 )
             request_id_var.reset(token)
+            http_scope_var.reset(scope_token)
 
 
 class ApiError(Exception):

@@ -128,6 +128,8 @@ class FaultInjector:
         )
         if fail:
             self._on_fault("http_503")
+            log.error("Falha injetada: respondendo HTTP 503", extra={"http.response.status_code": 503,
+                                                                     "fault.mode": cfg.fault_mode.value})
             raise ApiError(503, "INJECTED_FAULT", "Falha HTTP 503 injetada (laboratório)", {"Retry-After": "1"})
 
     async def after_commit(self, kind: FaultTarget) -> None:

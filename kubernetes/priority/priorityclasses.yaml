@@ -1,0 +1,19 @@
+# PriorityClass decide QUEM é agendado primeiro e QUEM pode ser removido (preemption)
+# quando falta capacidade. QoS decide QUEM sofre primeiro sob pressão de recursos do nó.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: critical-services
+value: 1000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: "BFF e Orders API — caminho crítico de receita."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: low-priority-services
+value: 100
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: "Workloads que podem ser removidos sob falta de capacidade."
