@@ -207,10 +207,16 @@ Três workflows executam os mesmos scripts do Quick start em um runner descartá
 | Workflow | Equivale a | Entradas |
 |---|---|---|
 | `images` | `scripts/images.sh all` — um job por app, passo a passo: tag → lock → testes → build amd64 → build arm64 → índice multi-arch. Roda em push na `main` que mexa em `apps/**`, manualmente ou chamado pelo `workshop-up` | região |
-| `workshop-up` | `make up` (chama `images`, depois setup + deploy + validate) | região, nome do cluster, validate on/off |
-| `workshop-down` | `make teardown` | região, nome do cluster, `confirm` = nome do cluster |
+| `workshop-up` | `make up` (chama `images`, depois setup + deploy + validate) | região, `student_id` (obrigatório; o instrutor usa o dele), `student_username`, validate on/off |
+| `workshop-down` | `make teardown` | região, `student_id`, `confirm` = `rw-<student_id>` |
 
 `workshop-up` e `workshop-down` usam o mesmo grupo de `concurrency` por cluster (nunca rodam up e down ao mesmo tempo).
+
+**Um ambiente por aluno:** com `student_id=aluno07`, o workflow cria o cluster `rw-aluno07` com os nomes derivados dele
+(tabela, roles, secret, VPC `10.207.0.0/16`), igual a `STUDENT_ID=aluno07 make up`. Com `student_username`, também cria
+a role exclusiva do aluno + access entry (`infrastructure/student-access.sh`; exige o permission set já atribuído à
+conta: `make identity-center`). Execuções de alunos diferentes rodam em paralelo. A role do pipeline cobre só os
+ambientes `rw-*` (o instrutor usa um deles, ex.: `aluno01`); rode `make gha-role` após atualizar este repositório.
 
 **Imagens:** cada app tem a própria tag (hash git de `apps/<app>` + `apps/shared`), então mexer em uma app só
 rebuilda ela. No ECR (repositórios `IMMUTABLE`) ficam `<tag>-amd64`, `<tag>-arm64` e `<tag>`, o índice multi-arch que os

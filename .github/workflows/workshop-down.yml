@@ -8,12 +8,11 @@ on:
         description: Região AWS
         default: us-east-1
         required: true
-      cluster_name:
-        description: Nome do cluster EKS
-        default: reliability-workshop
+      student_id:
+        description: "ID do aluno, do roster (aluno01..aluno40 => cluster rw-<id>). O instrutor usa o dele (ex.: aluno01)"
         required: true
       confirm:
-        description: Digite o nome do cluster para confirmar a remoção
+        description: Digite o nome do cluster para confirmar a remoção (rw-<id>)
         required: true
 
 permissions:
@@ -21,19 +20,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: workshop-env-${{ inputs.cluster_name }}
+  group: workshop-env-rw-${{ inputs.student_id }}
   cancel-in-progress: false
 
 env:
   AWS_REGION: ${{ inputs.aws_region }}
-  CLUSTER_NAME: ${{ inputs.cluster_name }}
+  STUDENT_ID: ${{ inputs.student_id }}
+  CLUSTER_NAME: rw-${{ inputs.student_id }}
   ASSUME_YES: "true"
   KUBECTL_VERSION: v1.36.0
   HELM_VERSION: v4.3.0
 
 jobs:
   down:
-    if: inputs.confirm == inputs.cluster_name
+    if: inputs.confirm == format('rw-{0}', inputs.student_id)
     runs-on: ubuntu-latest
     environment: workshop
     timeout-minutes: 90

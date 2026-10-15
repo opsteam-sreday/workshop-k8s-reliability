@@ -10,10 +10,13 @@ on:
         description: Região AWS
         default: us-east-1
         required: true
-      cluster_name:
-        description: Nome do cluster EKS
-        default: reliability-workshop
+      student_id:
+        description: "ID do aluno, do roster (aluno01..aluno40 => cluster rw-<id>). O instrutor usa o dele (ex.: aluno01)"
         required: true
+      student_username:
+        description: "Username do aluno no IAM Identity Center (cria a role exclusiva + acesso ao cluster dele)"
+        default: ""
+        required: false
       validate:
         description: Executar scripts/validate.sh ao final
         type: boolean
@@ -25,12 +28,14 @@ permissions:
 
 # Um único up/down por cluster por vez (os dois workflows compartilham o grupo).
 concurrency:
-  group: workshop-env-${{ inputs.cluster_name }}
+  group: workshop-env-rw-${{ inputs.student_id }}
   cancel-in-progress: false
 
 env:
   AWS_REGION: ${{ inputs.aws_region }}
-  CLUSTER_NAME: ${{ inputs.cluster_name }}
+  # Mesma regra de scripts/lib/common.sh: STUDENT_ID=<id> => cluster rw-<id> e nomes derivados dele.
+  STUDENT_ID: ${{ inputs.student_id }}
+  CLUSTER_NAME: rw-${{ inputs.student_id }}
   ASSUME_YES: "true"
   DOCKER_ISOLATED_CONFIG: "false"
   WORKSHOP_OWNER: github-actions
@@ -50,6 +55,14 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v5
+
+      - name: Validar entradas
+        run: |
+          # common.sh valida o STUDENT_ID; infrastructure/vpc/vpc.sh exige um ID do plano de CIDRs (aluno01..aluno40).
+          bash -c 'source scripts/lib/common.sh; echo "Cluster: $CLUSTER_NAME | tabela: $TABLE_NAME | roles: $ORDERS_ROLE_NAME, $STUDENT_ROLE_NAME"'
+          if [[ ! "$STUDENT_ID" =~ ^[a-z]*0*([1-9]|[1-3][0-9]|40)$ ]]; then
+            echo "::error::STUDENT_ID '$STUDENT_ID' fora do plano de VPCs (use aluno01..aluno40)"; exit 1
+          fi
 
       - name: Credenciais AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v5
@@ -101,6 +114,12 @@ jobs:
 
       - name: make deploy-only (imagens publicadas pelo job images)
         run: make deploy-only
+
+      - name: Acesso do aluno (role exclusiva + access entry)
+        if: inputs.student_username != ''
+        env:
+          STUDENT_USERNAME: ${{ inputs.student_username }}
+        run: infrastructure/student-access.sh create
 
       - name: make validate
         if: inputs.validate
