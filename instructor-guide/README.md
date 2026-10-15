@@ -60,7 +60,7 @@ ambiente completo `rw-<id>` com isolamento próprio:
 **Com 1 semana de antecedência:**
 
 1. `make fleet-quotas` — com 40 alunos, aumente em `us-east-1` **VPCs, Internet gateways e Elastic IPs** (padrão 5;
-   ~50) e **vCPU On-Demand Standard** (≥ 600: 8 vCPU/aluno em repouso, até 14 no LAB 02). Peça com antecedência.
+   ~50), **NAT gateways por AZ** (padrão 5; ~20 — o NAT de cada cluster cai em uma AZ) e **vCPU On-Demand Standard** (≥ 600: 8 vCPU/aluno em repouso, até 14 no LAB 02). Peça com antecedência.
 2. Com credenciais da **conta de gerenciamento** da organização (dona do IAM Identity Center):
    `WORKSHOP_ACCOUNT_ID=<conta do workshop> make identity-center` — cria o permission set `ReliabilityWorkshopStudent`
    (só `sts:AssumeRole` em `rw-*-student`), os usuários (`CREATE_USERS=false` se o diretório for externo/SCIM) e a

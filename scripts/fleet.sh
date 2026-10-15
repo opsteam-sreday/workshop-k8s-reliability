@@ -83,6 +83,8 @@ case "$cmd" in
     printf '%-34s %8s %8s %10s\n' "VPCs por região (L-F678F1CE)" "$(q vpc L-F678F1CE)" "$used_vpc" "$((used_vpc + n))"
     printf '%-34s %8s %8s %10s\n' "Internet gateways (L-A4707A72)" "$(q vpc L-A4707A72)" "$used_igw" "$((used_igw + n))"
     printf '%-34s %8s %8s %10s\n' "Elastic IPs (L-0263D0A3)" "$(q ec2 L-0263D0A3)" "$used_eip" "$((used_eip + n))"
+    # O eksctl põe o NAT de cada cluster em uma AZ; com N clusters, algumas AZs recebem bem mais que N/6.
+    printf '%-34s %8s %8s %10s\n' "NAT gateways por AZ (L-FE5A380F)" "$(q vpc L-FE5A380F)" "-" "$(( (n + 5) / 6 * 2 ))"
     printf '%-34s %8s %8s %10s\n' "vCPU On-Demand std (L-1216C47A)" "$(q ec2 L-1216C47A)" "-" "$((n * 14))"
     printf '%-34s %8s %8s %10s\n' "Clusters EKS (L-1194D53C)" "$(q eks L-1194D53C)" "-" "$n"
     echo
