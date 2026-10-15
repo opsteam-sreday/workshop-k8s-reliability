@@ -1,0 +1,136 @@
+# Build das imagens das APIs: um job isolado por app, imagem multi-arch (linux/amd64 + linux/arm64) no ECR.
+# Cada passo chama um subcomando de scripts/images.sh — a mesma lógica do build local (scripts/deploy.sh).
+#   <app>:<tag>-amd64, <app>:<tag>-arm64   imagens de cada arquitetura
+#   <app>:<tag>                            índice multi-arch (é o que os clusters usam)
+# <tag> = hash git de apps/<app> + apps/shared: mexer em uma app só rebuilda ela. Tag já publicada = nada a fazer.
+# Também é chamado pelo workshop-up (workflow_call) antes do deploy.
+name: images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/**
+      - scripts/images.sh
+      - scripts/lock.sh
+      - scripts/lib/common.sh
+      - .github/workflows/images.yml
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: Região AWS
+        default: us-east-1
+        required: true
+  workflow_call:
+    inputs:
+      aws_region:
+        type: string
+        default: us-east-1
+
+permissions:
+  id-token: write   # OIDC -> sts:AssumeRoleWithWebIdentity
+  contents: read
+
+env:
+  AWS_REGION: ${{ inputs.aws_region || 'us-east-1' }}
+  DOCKER_ISOLATED_CONFIG: "false"
+
+jobs:
+  image:
+    name: ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    environment: workshop   # exigido pela trust policy da role (infrastructure/github-actions/oidc-role.yaml)
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false      # uma app quebrada não impede as outras
+      matrix:
+        app: [bff-api, orders-api, inventory-api]
+    # Um build por app por vez: duas execuções da mesma tag não disputam o push.
+    concurrency:
+      group: images-${{ matrix.app }}
+      cancel-in-progress: false
+    env:
+      APP: ${{ matrix.app }}
+    steps:
+      - name: 1. Checkout
+        uses: actions/checkout@v5
+
+      - name: 2. Calcular a tag (hash de apps/${{ matrix.app }} + apps/shared)
+        id: tag
+        run: |
+          tag="$(scripts/images.sh tag "$APP")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Tag de $APP: $tag"
+
+      - name: 3. Conferir requirements.lock (todas as dependências com hash)
+        run: scripts/images.sh check "$APP"
+
+      - name: 4. Preparar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 5. Testes unitários (apps/${{ matrix.app }}/tests)
+        run: |
+          pip install -q -r apps/requirements-dev.txt
+          python -m pytest -q "apps/$APP/tests"
+
+      - name: 6. Credenciais AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 7. Imagem já publicada?
+        id: published
+        run: |
+          if scripts/images.sh published "$APP"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "$APP:${{ steps.tag.outputs.tag }} já está no ECR: nada a construir."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 8. Preparar QEMU (emulação arm64)
+        if: steps.published.outputs.skip == 'false'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: 9. Preparar Docker Buildx
+        if: steps.published.outputs.skip == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: 10. Login no ECR
+        if: steps.published.outputs.skip == 'false'
+        run: scripts/images.sh login
+
+      - name: 11. Garantir repositório ECR (IMMUTABLE)
+        if: steps.published.outputs.skip == 'false'
+        run: scripts/images.sh repo "$APP"
+
+      - name: 12. Build + push linux/amd64 (${{ steps.tag.outputs.tag }}-amd64)
+        if: steps.published.outputs.skip == 'false'
+        run: scripts/images.sh build "$APP" amd64
+
+      - name: 13. Build + push linux/arm64 (${{ steps.tag.outputs.tag }}-arm64)
+        if: steps.published.outputs.skip == 'false'
+        run: scripts/images.sh build "$APP" arm64
+
+      - name: 14. Publicar índice multi-arch (${{ steps.tag.outputs.tag }})
+        if: steps.published.outputs.skip == 'false'
+        run: scripts/images.sh manifest "$APP"
+
+      - name: 15. Resumo
+        if: always()
+        run: |
+          {
+            echo "### ${APP}"
+            echo
+            echo "| Tag | Conteúdo | Situação |"
+            echo "|---|---|---|"
+            situacao="${{ steps.published.outputs.skip == 'true' && 'já publicada (build pulado)' || job.status }}"
+            echo "| \`${{ steps.tag.outputs.tag }}\` | índice multi-arch (amd64 + arm64) | ${situacao} |"
+            echo "| \`${{ steps.tag.outputs.tag }}-amd64\` | linux/amd64 | |"
+            echo "| \`${{ steps.tag.outputs.tag }}-arm64\` | linux/arm64 | |"
+          } >> "$GITHUB_STEP_SUMMARY"

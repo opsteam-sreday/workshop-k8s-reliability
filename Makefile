@@ -47,7 +47,7 @@ help: ## Lista os alvos disponíveis
 	@echo "Variáveis: AWS_REGION=$(AWS_REGION) CLUSTER_NAME=$(CLUSTER_NAME) ASSUME_YES=$(ASSUME_YES) DOCKER_ISOLATED_CONFIG=$(DOCKER_ISOLATED_CONFIG)"
 
 ##@ Pré-requisitos e testes locais (sem AWS)
-.PHONY: check test local-stack
+.PHONY: check test local-stack lock
 check: ## Verifica ferramentas e credenciais AWS
 	@for t in aws kubectl eksctl helm docker python3 perl; do \
 	  if command -v $$t >/dev/null; then printf '  ✔ %s\n' $$t; else printf '  ✘ %s (ausente)\n' $$t; missing=1; fi; done; \
@@ -61,14 +61,20 @@ local-stack: ## Sobe DynamoDB Local + 3 APIs localmente (Ctrl+C para parar)
 	@test -x .venv/bin/python || scripts/test.sh >/dev/null
 	.venv/bin/python scripts/local/stack.py
 
+lock: ## Regenera apps/*/requirements.lock (todas as dependências com hash; rode após editar requirements*.txt)
+	scripts/lock.sh
+
 ##@ Ciclo de vida do ambiente (AWS — gera custo)
-.PHONY: up setup deploy deploy-only validate validate-quick validate-iam reset teardown status
+.PHONY: up setup images deploy deploy-only validate validate-quick validate-iam reset teardown status
 up: setup deploy validate ## Ambiente completo: setup + deploy + validate
 
 setup: ## Provisiona EKS, add-ons, DynamoDB, Pod Identity, CA, ClickStack, OTel e alertas (~40 min)
 	ASSUME_YES=$(ASSUME_YES) scripts/setup.sh
 
-deploy: ## Build/push das imagens no ECR + deploy das 3 APIs e do HPA
+images: ## Build/push multi-arch (amd64 + arm64) das imagens que ainda não estão no ECR
+	scripts/images.sh all
+
+deploy: ## Build/push das imagens multi-arch que faltam no ECR + deploy das 3 APIs e do HPA
 	scripts/deploy.sh
 
 deploy-only: ## Reaplica os manifests sem rebuild das imagens

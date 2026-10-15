@@ -1,50 +1,27 @@
 #!/usr/bin/env bash
-# Build + push das 3 imagens para o Amazon ECR e deploy no namespace ecommerce.
+# Deploy das 3 APIs no namespace ecommerce, com as imagens multi-arch do ECR (build: scripts/images.sh).
 # Uso: scripts/deploy.sh [--skip-build | --build-only]
-#   --build-only  só build/push (a frota faz isso uma vez; os clusters usam --skip-build)
+#   (padrão)      publica as imagens que ainda não estão no ECR + deploy
+#   --build-only  só build/push (a frota faz isso uma vez; o pipeline usa .github/workflows/images.yml)
+#   --skip-build  só deploy: as imagens da tag atual de cada app já precisam estar publicadas
 source "$(dirname "$0")/lib/common.sh"
 require aws kubectl python3
 account_id >/dev/null
 REGISTRY="$(ecr_registry)"
-SERVICES=(bff-api orders-api inventory-api)
-PLATFORM="${PLATFORM:-linux/amd64}"   # m6i = x86_64
-
-# DOCKER_ISOLATED_CONFIG=true: usa um DOCKER_CONFIG temporário SEM credsStore (Keychain/Desktop helper),
-# reaproveitando plugins e contextos do ~/.docker. Útil quando o credential helper trava.
-if [[ "${DOCKER_ISOLATED_CONFIG:-false}" == "true" ]]; then
-  export DOCKER_CONFIG="$STATE_DIR/docker-config"
-  mkdir -p "$DOCKER_CONFIG"
-  ctx="$(docker context show 2>/dev/null || echo default)"
-  printf '{"auths":{},"currentContext":"%s"}\n' "$ctx" > "$DOCKER_CONFIG/config.json"
-  for d in cli-plugins contexts buildx; do [[ -e "$HOME/.docker/$d" && ! -e "$DOCKER_CONFIG/$d" ]] && ln -s "$HOME/.docker/$d" "$DOCKER_CONFIG/$d"; done
-fi
 
 if [[ "${1:-}" != "--skip-build" ]]; then
-  require docker
-  info "Login no ECR ${REGISTRY}"
-  aws ecr get-login-password --region "$AWS_REGION" | with_timeout 60 docker login --username AWS --password-stdin "$REGISTRY" >/dev/null \
-    || fail "docker login no ECR falhou/expirou (tente DOCKER_ISOLATED_CONFIG=true scripts/deploy.sh)"
-  for svc in "${SERVICES[@]}"; do
-    repo="${ECR_PREFIX}/${svc}"
-    aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" >/dev/null 2>&1 || \
-      aws ecr create-repository --repository-name "$repo" --region "$AWS_REGION" \
-        --image-scanning-configuration scanOnPush=true --tags Key=workshop,Value=kubernetes-reliability >/dev/null
-    image="${REGISTRY}/${repo}:${IMAGE_TAG}"
-    info "Build ${svc} (${PLATFORM})"
-    docker buildx build --quiet --platform "$PLATFORM" -f "$REPO_ROOT/apps/${svc}/Dockerfile" \
-      -t "$image" --load "$REPO_ROOT/apps" >/dev/null
-    # Push com watchdog + retry: uploads ocasionalmente travam (Docker Desktop/redes de evento).
-    pushed=false
-    for attempt in 1 2 3; do
-      if with_timeout 300 docker push --quiet "$image" >/dev/null 2>&1; then pushed=true; break; fi
-      warn "push de ${svc} falhou/expirou (tentativa ${attempt}/3)"; sleep 5
-    done
-    [[ "$pushed" == true ]] || fail "não foi possível enviar ${image}"
-    ok "$image"
-  done
+  "$REPO_ROOT/scripts/images.sh" all
+  [[ "${1:-}" == "--build-only" ]] && { ok "Imagens publicadas (${ECR_PREFIX}/*, ${IMAGE_ARCHS[*]})"; exit 0; }
 fi
 
-[[ "${1:-}" == "--build-only" ]] && { ok "Imagens publicadas (${ECR_PREFIX}/*:${IMAGE_TAG})"; exit 0; }
+# Tag de cada app (índice multi-arch: cada nó puxa a sua arquitetura).
+TAGS=()
+for app in "${APPS[@]}"; do
+  tag="$(image_tag "$app")" || fail "não foi possível calcular a tag de ${app} (não é um clone git? defina IMAGE_TAG)"
+  "$REPO_ROOT/scripts/images.sh" published "$app" \
+    || fail "Imagem ${ECR_PREFIX}/${app}:${tag} não existe no ECR (rode scripts/images.sh all ou o workflow images)"
+  TAGS+=("$tag")
+done
 
 # Overlay gerado com valores do cluster (imagens ECR, região e tabela).
 OVERLAY="$OVERLAY_DIR"
@@ -57,7 +34,7 @@ kind: Kustomization
 resources:
   - ${BASE_REL}
 images:
-$(for svc in "${SERVICES[@]}"; do printf '  - name: %s\n    newName: %s/%s/%s\n    newTag: "%s"\n' "$svc" "$REGISTRY" "$ECR_PREFIX" "$svc" "$IMAGE_TAG"; done)
+$(for i in "${!APPS[@]}"; do printf '  - name: %s\n    newName: %s/%s/%s\n    newTag: "%s"\n' "${APPS[$i]}" "$REGISTRY" "$ECR_PREFIX" "${APPS[$i]}" "${TAGS[$i]}"; done)
 patches:
   - target: {kind: ConfigMap, name: orders-config}
     patch: |-
@@ -71,7 +48,7 @@ YAML
 
 info "Aplicando manifests"
 kubectl apply -k "$OVERLAY"   # plataforma (namespaces, PriorityClasses, NetworkPolicies) + apps (inclui o HPA)
-for svc in "${SERVICES[@]}"; do
-  kubectl -n ecommerce rollout status "deploy/${svc}" --timeout=5m
+for app in "${APPS[@]}"; do
+  kubectl -n ecommerce rollout status "deploy/${app}" --timeout=5m
 done
 ok "Deploy concluído. Valide com: scripts/validate.sh"

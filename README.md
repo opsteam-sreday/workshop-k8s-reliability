@@ -76,7 +76,7 @@ eks-reliability-workshop/
 | eksctl | 0.231.0 | criação/remoção do cluster |
 | kubectl | 1.34+ | operação do cluster |
 | Helm | 3.x ou 4.x (testado 4.3.0) | Cluster Autoscaler, ClickStack, OTel Collectors |
-| Docker (buildx) | 29 | build das imagens `linux/amd64` |
+| Docker (buildx) | 29 | build das imagens multi-arch `linux/amd64` + `linux/arm64` (Docker Desktop já emula arm64/amd64; no Linux: `docker run --privileged --rm tonistiigi/binfmt --install arm64`) |
 | Python | 3.9+ no host (scripts) · 3.12 para testes locais | bootstrap do HyperDX, alertas, testes |
 | k6 (opcional) | 2.3.0 | os testes rodam DENTRO do cluster via `scripts/k6.sh`; local é opcional |
 
@@ -130,7 +130,7 @@ aws sts get-caller-identity                 # confirme conta e região
 export AWS_REGION=us-east-1                  # opcional (padrão us-east-1)
 
 scripts/setup.sh      # ≈ 35–45 min: EKS, add-ons, DynamoDB, Pod Identity, CA, ClickStack, OTel, alertas
-scripts/deploy.sh     # build + push ECR + deploy das 3 APIs + HPA
+scripts/deploy.sh     # build multi-arch + push ECR (só o que mudou) + deploy das 3 APIs + HPA
 scripts/validate.sh   # critérios de aceitação baseline → .workshop/validation-report.md
 ```
 
@@ -202,14 +202,20 @@ Como funciona (detalhes em `apps/orders-api/app/service.py` e `repository.py`):
 
 ## Provisionamento via GitHub Actions
 
-Dois workflows manuais (`workflow_dispatch`) executam os mesmos scripts do Quick start em um runner descartável:
+Três workflows executam os mesmos scripts do Quick start em um runner descartável:
 
 | Workflow | Equivale a | Entradas |
 |---|---|---|
-| `workshop-up` | `make up` (setup + deploy + validate) | região, nome do cluster, validate on/off |
+| `images` | `scripts/images.sh all` — um job por app, passo a passo: tag → lock → testes → build amd64 → build arm64 → índice multi-arch. Roda em push na `main` que mexa em `apps/**`, manualmente ou chamado pelo `workshop-up` | região |
+| `workshop-up` | `make up` (chama `images`, depois setup + deploy + validate) | região, nome do cluster, validate on/off |
 | `workshop-down` | `make teardown` | região, nome do cluster, `confirm` = nome do cluster |
 
-Ambos usam o mesmo grupo de `concurrency` por cluster (nunca rodam up e down ao mesmo tempo).
+`workshop-up` e `workshop-down` usam o mesmo grupo de `concurrency` por cluster (nunca rodam up e down ao mesmo tempo).
+
+**Imagens:** cada app tem a própria tag (hash git de `apps/<app>` + `apps/shared`), então mexer em uma app só
+rebuilda ela. No ECR (repositórios `IMMUTABLE`) ficam `<tag>-amd64`, `<tag>-arm64` e `<tag>`, o índice multi-arch que os
+clusters usam (cada nó puxa a sua arquitetura). Tag já publicada = o job pula o build. Os jobs de `images` também
+usam o environment `workshop`: com *Required reviewers*, aprove os 3 jobs (bff, orders, inventory) de uma vez.
 
 **Configuração (uma vez por conta/repositório):**
 

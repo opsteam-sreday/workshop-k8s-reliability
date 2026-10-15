@@ -30,7 +30,17 @@ export STUDENT_ROLE_NAME="${STUDENT_ROLE_NAME:-${CLUSTER_NAME}-student}"
 export ECR_PREFIX="${ECR_PREFIX:-reliability-workshop}"
 export APPS_INSTANCE_TYPE="${APPS_INSTANCE_TYPE:-m6i.large}"
 export OBS_INSTANCE_TYPE="${OBS_INSTANCE_TYPE:-m6i.xlarge}"
-export IMAGE_TAG="${IMAGE_TAG:-1.0.0}"
+# Imagens: ver scripts/images.sh. Uma tag por app; cada tag é um índice multi-arch (amd64 + arm64).
+APPS=(bff-api orders-api inventory-api)
+IMAGE_ARCHS=(amd64 arm64)
+# Tag = hash git do que entra no build da app (apps/<app>: código, Dockerfile, lock; apps/shared; .dockerignore).
+# Muda só quando isso muda e é igual em qualquer clone/commit (inclusive shallow). IMAGE_TAG fixa uma tag manual.
+image_tag() {
+  [[ -n "${IMAGE_TAG:-}" ]] && { echo "$IMAGE_TAG"; return; }
+  local trees
+  trees="$(git -C "$REPO_ROOT" rev-parse "HEAD:apps/$1" HEAD:apps/shared HEAD:apps/.dockerignore 2>/dev/null)" || return 1
+  git hash-object --stdin <<<"$trees" | cut -c1-12
+}
 export WORKSHOP_OWNER="${WORKSHOP_OWNER:-${USER:-workshop}}"
 
 # Versões fixadas (verificadas em 2026-10-14 — ver README, seção "Versões").

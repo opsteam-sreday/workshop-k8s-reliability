@@ -92,7 +92,7 @@ case "$cmd" in
     echo "  aws service-quotas request-service-quota-increase --region ${AWS_REGION} --service-code vpc --quota-code L-F678F1CE --desired-value <n>"
     ;;
   up)
-    info "Build único das imagens (${ECR_PREFIX}/*:${IMAGE_TAG})"
+    info "Build único das imagens (${ECR_PREFIX}/*, multi-arch ${IMAGE_ARCHS[*]})"
     "$REPO_ROOT/scripts/deploy.sh" --build-only
     info "Provisionando ${#ROWS[@]} ambientes (PARALLEL=${PARALLEL}); logs em $FLEET_DIR/rw-<id>/up.log"
     run_all student_up up.log
