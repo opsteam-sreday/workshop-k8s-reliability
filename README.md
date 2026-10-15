@@ -234,7 +234,9 @@ usam o environment `workshop`: com *Required reviewers*, aprove os 3 jobs (bff, 
 2. No GitHub: **Settings › Environments › New environment** `workshop` (recomendado: *Required reviewers*) com as variáveis:
    - `AWS_ROLE_ARN` = ARN impresso no passo 1;
    - `EKS_ADMIN_PRINCIPAL_ARNS` (opcional) = ARNs IAM, separados por espaço, que também devem administrar o cluster
-     (ex.: `arn:aws:iam::<conta>:role/<sua-role>`). Sem isso, só o pipeline acessa um cluster que ele criou.
+     (ex.: `arn:aws:iam::<conta>:role/<sua-role>`; roles do SSO com o path `aws-reserved/sso.amazonaws.com/`).
+     O `scripts/setup.sh` concede o acesso logo após criar o cluster, antes das demais etapas (localmente, exporte a
+     mesma variável). Sem isso, só o pipeline acessa um cluster que ele criou.
 3. **Actions › workshop-up › Run workflow.** O resumo do job traz o `update-kubeconfig` e o relatório de validação.
 
 **Estado entre execuções:** as credenciais do HyperDX (`.workshop/hyperdx-credentials.json`) ficam no AWS Secrets

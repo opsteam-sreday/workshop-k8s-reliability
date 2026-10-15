@@ -96,6 +96,9 @@ jobs:
           fi
 
       - name: make setup
+        env:
+          # Concedido logo após o eksctl criar o cluster (scripts/setup.sh), antes das demais etapas.
+          EKS_ADMIN_PRINCIPAL_ARNS: ${{ vars.EKS_ADMIN_PRINCIPAL_ARNS }}
         run: make setup
 
       - name: Guardar credenciais do HyperDX (Secrets Manager)
@@ -103,14 +106,6 @@ jobs:
         run: |
           if [[ -s .workshop/hyperdx-credentials.json ]]; then scripts/hyperdx-credentials.sh push
           else echo "Sem credenciais para guardar (o setup não chegou à etapa do HyperDX)."; fi
-
-      - name: Acesso de administradores (EKS_ADMIN_PRINCIPAL_ARNS)
-        if: vars.EKS_ADMIN_PRINCIPAL_ARNS != ''
-        env:
-          EKS_ADMIN_PRINCIPAL_ARNS: ${{ vars.EKS_ADMIN_PRINCIPAL_ARNS }}
-        run: |
-          read -r -a arns <<<"$EKS_ADMIN_PRINCIPAL_ARNS"
-          infrastructure/access-entry.sh grant "${arns[@]}"
 
       - name: make deploy-only (imagens publicadas pelo job images)
         run: make deploy-only
