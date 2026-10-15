@@ -27,8 +27,9 @@ permission_set_arn() {
       --query 'PermissionSets[]' --output text); do
     name="$(aws sso-admin describe-permission-set --instance-arn "$INSTANCE_ARN" --permission-set-arn "$ps" \
       --region "$AWS_REGION" --query 'PermissionSet.Name' --output text)"
-    [[ "$name" == "$STUDENT_PERMISSION_SET" ]] && { echo "$ps"; return; }
+    [[ "$name" == "$STUDENT_PERMISSION_SET" ]] && { echo "$ps"; return 0; }
   done
+  return 0   # não encontrado: saída vazia (sem isso, o set -e encerraria o script em silêncio)
 }
 
 user_id() {
