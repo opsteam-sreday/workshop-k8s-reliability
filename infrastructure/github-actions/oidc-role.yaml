@@ -20,7 +20,7 @@ Parameters:
     Description: >-
       Policy anexada à role (SEM valor padrão: escolha explícita de quem implanta). eksctl cria VPC, NAT,
       CloudFormation, roles IAM, node groups e add-ons, então a policy precisa cobrir EKS, EC2, CloudFormation,
-      IAM, Auto Scaling, DynamoDB, ECR e SSM. A trust policy restringe a role ao repositório + environment.
+      IAM, Auto Scaling, DynamoDB, ECR, SSM (AMIs) e Secrets Manager. A trust policy restringe a role ao repositório + environment.
   CreateOidcProvider:
     Type: String
     AllowedValues: ["true", "false"]

@@ -66,5 +66,5 @@ jobs:
       - name: make teardown
         run: make teardown
 
-      - name: Remover credenciais do HyperDX (SSM)
+      - name: Remover credenciais do HyperDX (Secrets Manager)
         run: scripts/hyperdx-credentials.sh delete

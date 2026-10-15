@@ -65,7 +65,7 @@ jobs:
       - name: make check
         run: make check
 
-      - name: Restaurar credenciais do HyperDX (SSM)
+      - name: Restaurar credenciais do HyperDX (Secrets Manager)
         run: scripts/hyperdx-credentials.sh pull
 
       - name: Acesso do pipeline a um cluster já existente
@@ -79,7 +79,7 @@ jobs:
       - name: make setup
         run: make setup
 
-      - name: Guardar credenciais do HyperDX (SSM)
+      - name: Guardar credenciais do HyperDX (Secrets Manager)
         if: always()
         run: |
           if [[ -s .workshop/hyperdx-credentials.json ]]; then scripts/hyperdx-credentials.sh push
@@ -113,7 +113,7 @@ jobs:
             [[ -f .workshop/validation-report.md ]] && { echo; cat .workshop/validation-report.md; }
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Somente o relatório: .workshop/ também contém as credenciais do HyperDX, que ficam apenas no SSM.
+      # Somente o relatório: .workshop/ também contém as credenciais do HyperDX, que ficam apenas no Secrets Manager.
       - name: Relatório de validação
         if: always()
         uses: actions/upload-artifact@v5
