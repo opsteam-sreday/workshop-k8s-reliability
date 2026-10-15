@@ -1,0 +1,150 @@
+# VPC de UM cluster do workshop: 2 subnets públicas + 2 privadas em 2 AZs, Internet Gateway e 1 NAT Gateway.
+#   - Públicas (/20): ENIs do control plane do EKS (controlPlaneSubnetIDs) e o NAT Gateway.
+#   - Privadas (/18): node groups. O VPC CNI dá a cada Pod um IP da VPC, por isso as privadas são as maiores.
+# NAT único (na AZ A) por custo/quota de Elastic IP: com 41 clusters, 2 NATs por VPC não caberiam em 50 EIPs.
+# Implantado por infrastructure/vpc/vpc.sh (CIDR e AZs vêm do plano de endereçamento em README.md).
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Kubernetes Reliability Workshop - VPC do cluster
+
+Parameters:
+  ClusterName: {Type: String}
+  SecondOctet:
+    Type: Number
+    MinValue: 200
+    MaxValue: 240
+    Description: "VPC 10.<SecondOctet>.0.0/16"
+  AzA: {Type: "AWS::EC2::AvailabilityZone::Name"}
+  AzB: {Type: "AWS::EC2::AvailabilityZone::Name"}
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Sub 10.${SecondOctet}.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true   # exigido pelo EKS (endpoint privado e registro dos nós)
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-vpc"}
+        - {Key: workshop, Value: kubernetes-reliability}
+        - {Key: cluster, Value: !Ref ClusterName}
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-igw"}
+        - {Key: workshop, Value: kubernetes-reliability}
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: {VpcId: !Ref Vpc, InternetGatewayId: !Ref InternetGateway}
+
+  # ------------------------------------------------------------ subnets públicas (10.X.0.0/20, 10.X.16.0/20)
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AzA
+      CidrBlock: !Sub 10.${SecondOctet}.0.0/20
+      MapPublicIpOnLaunch: true
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-public-a"}
+        - {Key: kubernetes.io/role/elb, Value: "1"}
+        - {Key: workshop, Value: kubernetes-reliability}
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AzB
+      CidrBlock: !Sub 10.${SecondOctet}.16.0/20
+      MapPublicIpOnLaunch: true
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-public-b"}
+        - {Key: kubernetes.io/role/elb, Value: "1"}
+        - {Key: workshop, Value: kubernetes-reliability}
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-public"}
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable}
+  PublicSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable}
+
+  # ------------------------------------------------------------ NAT Gateway (na pública A)
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-nat"}
+        - {Key: workshop, Value: kubernetes-reliability}
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-nat"}
+        - {Key: workshop, Value: kubernetes-reliability}
+
+  # ------------------------------------------------------------ subnets privadas (10.X.64.0/18, 10.X.128.0/18)
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AzA
+      CidrBlock: !Sub 10.${SecondOctet}.64.0/18
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-private-a"}
+        - {Key: kubernetes.io/role/internal-elb, Value: "1"}
+        - {Key: workshop, Value: kubernetes-reliability}
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AzB
+      CidrBlock: !Sub 10.${SecondOctet}.128.0/18
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-private-b"}
+        - {Key: kubernetes.io/role/internal-elb, Value: "1"}
+        - {Key: workshop, Value: kubernetes-reliability}
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-private"}
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable}
+  PrivateSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable}
+
+Outputs:
+  VpcId: {Value: !Ref Vpc}
+  VpcCidr: {Value: !GetAtt Vpc.CidrBlock}
+  PublicSubnetA: {Value: !Ref PublicSubnetA}
+  PublicSubnetB: {Value: !Ref PublicSubnetB}
+  PrivateSubnetA: {Value: !Ref PrivateSubnetA}
+  PrivateSubnetB: {Value: !Ref PrivateSubnetB}

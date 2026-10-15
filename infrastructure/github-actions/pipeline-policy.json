@@ -25,7 +25,10 @@
       "Sid": "EksctlStacks",
       "Effect": "Allow",
       "Action": "cloudformation:*",
-      "Resource": "arn:aws:cloudformation:${AWS_REGION}:${AWS_ACCOUNT_ID}:stack/eksctl-${CLUSTER_NAME}-*/*"
+      "Resource": [
+        "arn:aws:cloudformation:${AWS_REGION}:${AWS_ACCOUNT_ID}:stack/eksctl-${CLUSTER_NAME}-*/*",
+        "arn:aws:cloudformation:${AWS_REGION}:${AWS_ACCOUNT_ID}:stack/${CLUSTER_NAME}-vpc/*"
+      ]
     },
     {
       "Sid": "WorkshopCluster",

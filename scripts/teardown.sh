@@ -44,10 +44,12 @@ if eksctl get cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2
   info "Removendo cluster EKS (≈10-15 min)"
   eksctl delete cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --wait --disable-nodegroup-eviction
 fi
+# A VPC é criada fora do eksctl (infrastructure/vpc/), então sai depois do cluster.
+"$REPO_ROOT/infrastructure/vpc/vpc.sh" delete || warn "VPC ${CLUSTER_NAME}-vpc não removida (ENIs ainda em uso? repita o teardown)"
 
 info "Verificando recursos remanescentes"
 left_vol="$(aws ec2 describe-volumes --region "$AWS_REGION" --filters "Name=tag:kubernetes.io/cluster/${CLUSTER_NAME},Values=owned" --query 'Volumes[].VolumeId' --output text)"
-left_stacks="$(aws cloudformation list-stacks --region "$AWS_REGION" --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE DELETE_FAILED --query "StackSummaries[?starts_with(StackName, 'eksctl-${CLUSTER_NAME}')].StackName" --output text)"
+left_stacks="$(aws cloudformation list-stacks --region "$AWS_REGION" --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE DELETE_FAILED --query "StackSummaries[?starts_with(StackName, 'eksctl-${CLUSTER_NAME}') || StackName=='${CLUSTER_NAME}-vpc'].StackName" --output text)"
 [[ -z "$left_vol" ]] && ok "Nenhum volume EBS remanescente" || warn "Volumes EBS remanescentes: $left_vol (remova com aws ec2 delete-volume)"
 [[ -z "$left_stacks" ]] && ok "Nenhuma stack CloudFormation remanescente" || warn "Stacks remanescentes: $left_stacks"
 rm -rf "$OVERLAY_DIR"

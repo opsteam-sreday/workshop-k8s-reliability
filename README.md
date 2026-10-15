@@ -51,7 +51,7 @@ scripts k6 e cinco laboratórios. O status de validação de cada item está em
 ```text
 eks-reliability-workshop/
 ├── README.md · IMPLEMENTATION_PROGRESS.md · pytest.ini
-├── infrastructure/   eksctl.yaml · dynamodb.sh · dynamodb-table.json · pod-identity.sh
+├── infrastructure/   vpc/ (VPC por cluster, plano 10.200–10.240.0.0/16) · eksctl.yaml · dynamodb.sh · dynamodb-table.json · pod-identity.sh
 │                     orders-dynamodb-policy.json · pod-identity-trust.json · cluster-autoscaler-values.yaml
 ├── apps/             shared/workshop_common · bff-api · orders-api · inventory-api (app/, tests/, Dockerfile)
 ├── kubernetes/       platform/ (namespaces, PriorityClasses, otel-config, NetworkPolicies do namespace)

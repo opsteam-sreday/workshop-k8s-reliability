@@ -13,6 +13,7 @@ ${c_blue}Kubernetes Reliability Workshop — setup${c_off}
   Conta AWS ........ ${AWS_ACCOUNT_ID}
   Região ........... ${AWS_REGION}
   Cluster .......... ${CLUSTER_NAME} (Kubernetes ${K8S_VERSION})
+  VPC .............. $("$REPO_ROOT/infrastructure/vpc/vpc.sh" plan | sed -n 2p | sed 's/^VPC *\.* //') (2 públicas: control plane + NAT · 2 privadas: nós)
   Node groups ...... apps: 2-5 x ${APPS_INSTANCE_TYPE} | observability: 1 x ${OBS_INSTANCE_TYPE}
   DynamoDB ......... ${TABLE_NAME} (PAY_PER_REQUEST)
   Custo estimado ... ~US\$ 0.55/h em repouso; ~US\$ 0.85/h com 5 nós apps (ver README › Custos)
@@ -20,13 +21,18 @@ INFO
 confirm "Criar/atualizar estes recursos na AWS (geram custo)?" || fail "Cancelado"
 
 # ---------------------------------------------------------------- 1. EKS
-section "1/9 · Cluster Amazon EKS"
-render "$REPO_ROOT/infrastructure/eksctl.yaml" > "$STATE_DIR/eksctl.rendered.yaml"
+section "1/9 · VPC e cluster Amazon EKS"
 if eksctl get cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
   ok "Cluster $CLUSTER_NAME já existe — etapa ignorada"
 else
+  run "Criar a VPC do cluster (≈3 min)" \
+    "Plano de endereçamento: $("$REPO_ROOT/infrastructure/vpc/vpc.sh" plan | sed -n 2p | sed 's/^VPC *\.* //'). Duas subnets públicas (control plane do EKS e NAT Gateway) e duas privadas (node groups, saída pela NAT) em 2 AZs — ver infrastructure/vpc/README.md." \
+    "$REPO_ROOT/infrastructure/vpc/vpc.sh" create
+  eval "$("$REPO_ROOT/infrastructure/vpc/vpc.sh" env)"
+  export VPC_ID PUBLIC_SUBNET_A PUBLIC_SUBNET_B PRIVATE_SUBNET_A PRIVATE_SUBNET_B
+  render "$REPO_ROOT/infrastructure/eksctl.yaml" > "$STATE_DIR/eksctl.rendered.yaml"
   run "Criar o cluster EKS (≈15-20 min)" \
-    "O eksctl lê infrastructure/eksctl.yaml (já renderizado com conta/região) e cria via CloudFormation: VPC com subnets públicas/privadas e NAT, control plane Kubernetes ${K8S_VERSION}, os add-ons (VPC CNI com Network Policy, CoreDNS, kube-proxy, Pod Identity Agent, Metrics Server, EBS CSI) e dois Managed Node Groups: 'apps' (onde rodam as APIs e o Cluster Autoscaler atua) e 'observability' (com taint, isolando o ClickStack dos experimentos de pressão). Também cria a Pod Identity Association do Cluster Autoscaler." \
+    "O eksctl lê infrastructure/eksctl.yaml (renderizado com conta, região e os IDs da VPC acima) e cria via CloudFormation: control plane com as ENIs nas subnets públicas, endpoint público + privado, control plane Kubernetes ${K8S_VERSION}, os add-ons (VPC CNI com Network Policy, CoreDNS, kube-proxy, Pod Identity Agent, Metrics Server, EBS CSI) e dois Managed Node Groups: 'apps' (onde rodam as APIs e o Cluster Autoscaler atua) e 'observability' (com taint, isolando o ClickStack dos experimentos de pressão). Também cria a Pod Identity Association do Cluster Autoscaler." \
     eksctl create cluster -f "$STATE_DIR/eksctl.rendered.yaml"
 fi
 run "Configurar o kubectl para o novo cluster" \
