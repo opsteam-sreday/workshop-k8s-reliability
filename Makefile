@@ -31,6 +31,7 @@ MB        ?= 700
 WORKERS   ?= 2
 SLACK     ?= 100
 MINUTES   ?= 15
+PRINCIPALS ?=
 
 K6_ARGS = $(if $(RATE),RATE=$(RATE)) $(if $(DURATION),DURATION=$(DURATION)) $(if $(VUS),VUS=$(VUS))
 NS = kubectl -n ecommerce
@@ -110,6 +111,23 @@ alerts: ## (Re)cria webhook, saved searches e os 4 alertas no HyperDX
 	@source scripts/lib/common.sh && source scripts/lib/hyperdx-port-forward.sh && start_hyperdx_port_forward && \
 	  python3 observability/alerts/create_alerts.py --app-url http://localhost:$$HDX_APP_PORT \
 	    --api-url http://localhost:$$HDX_API_PORT --creds .workshop/hyperdx-credentials.json
+
+##@ GitHub Actions (.github/workflows/workshop-up.yml e workshop-down.yml)
+.PHONY: gha-role gha-role-delete access-entry hyperdx-credentials-pull hyperdx-credentials-push
+gha-role: ## Cria a policy restrita do workshop + role OIDC do pipeline
+	infrastructure/github-actions.sh create
+
+gha-role-delete: ## Remove a role do pipeline e o OIDC provider criado por ela
+	infrastructure/github-actions.sh delete
+
+access-entry: ## Dá acesso admin ao cluster (PRINCIPALS="arn ..."; vazio = você)
+	infrastructure/access-entry.sh grant $(PRINCIPALS)
+
+hyperdx-credentials-pull: ## Baixa do SSM as credenciais do HyperDX (ambiente criado pelo pipeline)
+	scripts/hyperdx-credentials.sh pull
+
+hyperdx-credentials-push: ## Envia ao SSM as credenciais do HyperDX (ambiente criado localmente)
+	scripts/hyperdx-credentials.sh push
 
 ##@ Acesso
 .PHONY: hyperdx bff-port-forward hyperdx-credentials

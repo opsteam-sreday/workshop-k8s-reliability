@@ -26,6 +26,7 @@ fi
 
 "$REPO_ROOT/infrastructure/pod-identity.sh" delete || true
 "$REPO_ROOT/infrastructure/dynamodb.sh" delete || true
+"$REPO_ROOT/scripts/hyperdx-credentials.sh" delete || true
 
 for svc in bff-api orders-api inventory-api; do
   aws ecr delete-repository --repository-name "reliability-workshop/${svc}" --region "$AWS_REGION" --force >/dev/null 2>&1 \

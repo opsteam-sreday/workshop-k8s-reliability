@@ -193,6 +193,35 @@ Como funciona (detalhes em `apps/orders-api/app/service.py` e `repository.py`):
 - **API de injeção de falhas** escuta somente em `127.0.0.1:8081` dentro de cada Pod (acesso via `kubectl exec` por quem tem RBAC). Habilitada apenas com `WORKSHOP_MODE=true`.
 - Pod Security Admission `restricted`, containers non-root, `readOnlyRootFilesystem`, `drop: [ALL]`.
 
+## Provisionamento via GitHub Actions
+
+Dois workflows manuais (`workflow_dispatch`) executam os mesmos scripts do Quick start em um runner descartável:
+
+| Workflow | Equivale a | Entradas |
+|---|---|---|
+| `workshop-up` | `make up` (setup + deploy + validate) | região, nome do cluster, validate on/off |
+| `workshop-down` | `make teardown` | região, nome do cluster, `confirm` = nome do cluster |
+
+Ambos usam o mesmo grupo de `concurrency` por cluster (nunca rodam up e down ao mesmo tempo).
+
+**Configuração (uma vez por conta/repositório):**
+
+1. Crie a role OIDC do pipeline, escolhendo **explicitamente** a policy anexada (sem padrão — ver
+   `infrastructure/github-actions/oidc-role.yaml`). A trust policy só aceita jobs deste repositório no environment `workshop`:
+   ```bash
+   make gha-role   # policy restrita do workshop (ou GITHUB_ACTIONS_POLICY_ARN=<arn> para outra); imprime o ARN da role
+   ```
+2. No GitHub: **Settings › Environments › New environment** `workshop` (recomendado: *Required reviewers*) com as variáveis:
+   - `AWS_ROLE_ARN` = ARN impresso no passo 1;
+   - `EKS_ADMIN_PRINCIPAL_ARNS` (opcional) = ARNs IAM, separados por espaço, que também devem administrar o cluster
+     (ex.: `arn:aws:iam::<conta>:role/<sua-role>`). Sem isso, só o pipeline acessa um cluster que ele criou.
+3. **Actions › workshop-up › Run workflow.** O resumo do job traz o `update-kubeconfig` e o relatório de validação.
+
+**Estado entre execuções:** as credenciais do HyperDX (`.workshop/hyperdx-credentials.json`) ficam no SSM Parameter
+Store (`/reliability-workshop/<cluster>/hyperdx-credentials`, SecureString), nunca em artifacts. Para usar localmente
+um ambiente criado pelo pipeline: `make hyperdx-credentials-pull`. Para o pipeline assumir um ambiente criado
+localmente: `make hyperdx-credentials-push` (o workflow concede a si mesmo acesso ao cluster via EKS access entry).
+
 ## Testes locais (sem AWS)
 
 ```bash
