@@ -1,0 +1,7 @@
+# ANTI-PATTERN INTENCIONAL (LAB 03): a Inventory API participa da transação de pedido
+# (reserva de estoque). Marcá-la como baixa prioridade permite que o scheduler a remova
+# para abrir espaço para a Orders API — e então TODOS os pedidos falham (modo STRICT).
+spec:
+  template:
+    spec:
+      priorityClassName: low-priority-services

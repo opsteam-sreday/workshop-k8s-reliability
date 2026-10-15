@@ -1,0 +1,32 @@
+# Cluster Autoscaler — chart autoscaler/cluster-autoscaler 9.59.0, imagem v1.36.1 (EKS 1.36).
+# Credenciais AWS via EKS Pod Identity (associação criada pelo eksctl: kube-system/cluster-autoscaler).
+# awsRegion e autoDiscovery.clusterName são passados por scripts/setup.sh.
+cloudProvider: aws
+image:
+  tag: v1.36.1
+rbac:
+  serviceAccount:
+    create: true
+    name: cluster-autoscaler
+# O CA roda no nó de observabilidade: os experimentos de pressão não o removem.
+nodeSelector: {workload: observability}
+tolerations:
+  - {key: workload, operator: Equal, value: observability, effect: NoSchedule}
+priorityClassName: system-cluster-critical
+resources:
+  requests: {cpu: 100m, memory: 300Mi}
+  limits: {memory: 600Mi}
+extraArgs:
+  logtostderr: true
+  stderrthreshold: info
+  v: 4
+  expander: least-waste
+  balance-similar-node-groups: true
+  skip-nodes-with-system-pods: false
+  skip-nodes-with-local-storage: false
+  # Valores acelerados para o workshop (padrões: 10m). NÃO use em produção sem análise.
+  scale-down-unneeded-time: 2m
+  scale-down-delay-after-add: 2m
+  scale-down-utilization-threshold: 0.5
+  new-pod-scale-up-delay: 0s
+  max-node-provision-time: 10m

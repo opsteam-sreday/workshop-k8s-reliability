@@ -1,0 +1,47 @@
+# Restringe o uso da ServiceAccount privilegiada (orders-api-sa).
+# Sem isso, QUALQUER pessoa com permissão de criar Pods em `ecommerce` poderia criar
+# um Pod com serviceAccountName=orders-api-sa e obter as credenciais do DynamoDB.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: restrict-orders-api-sa
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: ecommerce}
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["pods/ephemeralcontainers"]
+  matchConditions:
+    - name: uses-orders-sa
+      expression: "object.spec.serviceAccountName == 'orders-api-sa'"
+  variables:
+    # request.subResource só existe para subrecursos: sempre testar com has().
+    - name: isEphemeral
+      expression: "has(request.subResource) && request.subResource == 'ephemeralcontainers'"
+  validations:
+    - expression: "!variables.isEphemeral"
+      message: "Containers efêmeros (kubectl debug) não são permitidos em Pods com orders-api-sa."
+    - expression: "variables.isEphemeral || request.userInfo.username == 'system:serviceaccount:kube-system:replicaset-controller'"
+      message: "Somente o ReplicaSet controller pode criar Pods com orders-api-sa (crie via Deployment orders-api)."
+    - expression: "variables.isEphemeral || (has(object.metadata.labels) && 'app.kubernetes.io/name' in object.metadata.labels && object.metadata.labels['app.kubernetes.io/name'] == 'orders-api')"
+      message: "Pods com orders-api-sa devem pertencer à aplicação orders-api."
+    - expression: "variables.isEphemeral || object.spec.containers.all(c, c.image.contains('/orders-api:') || c.image.contains('/orders-api@'))"
+      message: "Pods com orders-api-sa só podem executar a imagem orders-api."
+    - expression: "variables.isEphemeral || !has(object.spec.initContainers) || size(object.spec.initContainers) == 0"
+      message: "initContainers não são permitidos em Pods com orders-api-sa."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: restrict-orders-api-sa
+spec:
+  policyName: restrict-orders-api-sa
+  validationActions: [Deny]

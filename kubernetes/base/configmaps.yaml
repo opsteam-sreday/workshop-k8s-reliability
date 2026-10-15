@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-config
+  namespace: ecommerce
+data:
+  # Gateway do OpenTelemetry Collector (namespace observability). Ver observability/otel/.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-gateway.observability.svc.cluster.local:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_SEMCONV_STABILITY_OPT_IN: http
+  OTEL_METRIC_EXPORT_INTERVAL: "10000"
+  DEPLOYMENT_ENVIRONMENT: workshop
+  # Workshop: habilita a API administrativa de injeção de falhas em 127.0.0.1:8081.
+  WORKSHOP_MODE: "true"
+  LOG_LEVEL: INFO
+  SHUTDOWN_DELAY_SECONDS: "5"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bff-config
+  namespace: ecommerce
+data:
+  ORDERS_URL: http://orders-api.ecommerce.svc.cluster.local:8080
+  BFF_ORDERS_TIMEOUT_MS: "3000"
+  BFF_MAX_CONNECTIONS: "100"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orders-config
+  namespace: ecommerce
+data:
+  ORDERS_TABLE_NAME: workshop-orders            # substituído pelo deploy.sh
+  AWS_REGION: us-east-1                         # substituído pelo deploy.sh
+  INVENTORY_URL: http://inventory-api.ecommerce.svc.cluster.local:8080
+  INVENTORY_TIMEOUT_MS: "500"
+  INVENTORY_MAX_RETRIES: "2"
+  INVENTORY_RETRY_BASE_MS: "50"
+  INVENTORY_RETRY_MAX_BACKOFF_MS: "400"
+  INVENTORY_CALL_BUDGET_MS: "2000"
+  INVENTORY_MAX_CONCURRENT_REQUESTS: "10"
+  CB_FAILURE_THRESHOLD: "5"
+  CB_RECOVERY_TIMEOUT_SECONDS: "15"
+  CB_HALF_OPEN_MAX_CALLS: "2"
+  ORDERS_STOCK_PRECHECK: "true"
+  IDEMPOTENCY_TTL_SECONDS: "86400"
+  IDEMPOTENCY_LEASE_SECONDS: "10"
+  ORDERS_CPU_WORK_MS: "0"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inventory-config
+  namespace: ecommerce
+data:
+  INVENTORY_FAULT_MODE: NONE
+  INVENTORY_FAULT_TARGET: ALL
+  INVENTORY_LATENCY_MS: "0"
+  INVENTORY_ERROR_RATE: "0"
+  INVENTORY_CPU_STRESS_ENABLED: "false"
+  INVENTORY_CPU_STRESS_DURATION_MS: "0"
+  INVENTORY_MEMORY_STRESS_MB: "0"
+  INVENTORY_MEMORY_STRESS_MAX_MB: "2048"
+  INVENTORY_MAX_CONCURRENT_REQUESTS: "10"
+  INVENTORY_INITIAL_STOCK: "1000000"
+  INVENTORY_LIMITED_STOCK: "5"

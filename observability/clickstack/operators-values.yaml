@@ -1,0 +1,16 @@
+# clickstack/clickstack-operators 1.1.0 (MongoDB Kubernetes Operator + ClickHouse Operator).
+# Instalado ANTES do chart clickstack. Operadores executam no node group observability.
+mongodb-operator:
+  operator:
+    watchedResources: [mongodbcommunity]
+    resources:   # padrão do chart: 500m/200Mi — excessivo para o laboratório
+      requests: {cpu: 100m, memory: 200Mi}
+      limits: {memory: 1Gi}
+    nodeSelector: {workload: observability}
+    tolerations:
+      - {key: workload, operator: Equal, value: observability, effect: NoSchedule}
+clickhouse-operator:
+  manager:
+    nodeSelector: {workload: observability}
+    tolerations:
+      - {key: workload, operator: Equal, value: observability, effect: NoSchedule}

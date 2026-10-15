@@ -1,0 +1,5 @@
+# Correção do LAB 03: dependência transacional recebe a mesma prioridade do caminho crítico.
+spec:
+  template:
+    spec:
+      priorityClassName: critical-services
