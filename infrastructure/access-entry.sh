@@ -25,8 +25,16 @@ case "$cmd" in
           --principal-arn "$arn" >/dev/null 2>&1; then
         ok "Access entry já existe: $arn"
       else
-        aws eks create-access-entry --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
-          --principal-arn "$arn" --tags workshop=kubernetes-reliability >/dev/null
+        # Role recém-criada (ex.: student-access.sh): o IAM leva alguns segundos para propagar e, até lá,
+        # o EKS responde "invalid principal". Repete por até ~2 min antes de desistir.
+        for attempt in $(seq 1 24); do
+          if err="$(aws eks create-access-entry --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+              --principal-arn "$arn" --tags workshop=kubernetes-reliability 2>&1 >/dev/null)"; then
+            break
+          fi
+          [[ "$err" == *"invalid principal"* && $attempt -lt 24 ]] || fail "create-access-entry falhou para $arn: $err"
+          info "Aguardando a propagação de $arn no IAM (tentativa ${attempt}/24)"; sleep 5
+        done
         ok "Access entry criada: $arn"
       fi
       aws eks associate-access-policy --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \

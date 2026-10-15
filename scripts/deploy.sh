@@ -51,4 +51,12 @@ kubectl apply -k "$OVERLAY"   # plataforma (namespaces, PriorityClasses, Network
 for app in "${APPS[@]}"; do
   kubectl -n ecommerce rollout status "deploy/${app}" --timeout=5m
 done
+# O NLB recebe o hostname em ~1 min; o DNS dele leva mais alguns minutos para responder.
+lb=""
+for _ in $(seq 1 18); do
+  lb="$(kubectl -n ecommerce get svc bff-api-public -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)"
+  [[ -n "$lb" ]] && break; sleep 10
+done
+if [[ -n "$lb" ]]; then ok "BFF pública: http://${lb}/docs (DNS do NLB leva ~2-3 min na primeira vez)"
+else warn "NLB da BFF ainda sem hostname: kubectl -n ecommerce describe svc bff-api-public"; fi
 ok "Deploy concluído. Valide com: scripts/validate.sh"
