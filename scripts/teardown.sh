@@ -3,8 +3,8 @@
 source "$(dirname "$0")/lib/common.sh"
 require aws kubectl eksctl helm
 account_id >/dev/null
-# Imagens ECR são compartilhadas pelos clusters da conta: só saem no ambiente único ou com DELETE_IMAGES=true.
-DELETE_IMAGES="${DELETE_IMAGES:-$([[ "$CLUSTER_NAME" == "reliability-workshop" ]] && echo true || echo false)}"
+# Imagens ECR são compartilhadas pelos clusters da conta: só saem com DELETE_IMAGES=true (último ambiente).
+DELETE_IMAGES="${DELETE_IMAGES:-false}"
 warn "Isto removerá o cluster ${CLUSTER_NAME}, a tabela ${TABLE_NAME}, as roles ${ORDERS_ROLE_NAME}/${STUDENT_ROLE_NAME}$([[ "$DELETE_IMAGES" == true ]] && echo ", os repositórios ECR ${ECR_PREFIX}/*") e os volumes EBS do workshop (conta ${AWS_ACCOUNT_ID}, ${AWS_REGION})."
 confirm "Confirmar remoção definitiva?" || fail "Cancelado"
 

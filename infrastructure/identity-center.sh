@@ -9,6 +9,7 @@
 # Uso: WORKSHOP_ACCOUNT_ID=<conta> infrastructure/identity-center.sh apply|remove <roster.csv>
 #   roster.csv: student_id,username,email,given_name,family_name  (ver infrastructure/students.example.csv)
 #   CREATE_USERS=false  não cria usuários (diretório externo/SCIM: os usuários já devem existir)
+export WORKSHOP_NO_CLUSTER=true   # não opera um cluster
 source "$(dirname "$0")/../scripts/lib/common.sh"
 require aws python3
 

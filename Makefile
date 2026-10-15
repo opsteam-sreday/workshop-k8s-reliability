@@ -6,7 +6,7 @@
 #   make lab02-start     inicia um passo específico de um laboratório
 #
 # Variáveis (sobrescreva na linha de comando):
-#   make setup AWS_REGION=us-west-2 CLUSTER_NAME=meu-cluster
+#   make setup STUDENT_ID=aluno01 AWS_REGION=us-west-2
 #   make k6-stress RATE=80 DURATION=8m
 # Compatível com GNU Make 3.81 (padrão do macOS).
 # =============================================================================
@@ -16,7 +16,7 @@ SHELL := /bin/bash
 export AWS_REGION   ?= us-east-1
 # STUDENT_ID=aluno01 => cluster rw-aluno01 e recursos com esse prefixo (turma: scripts/fleet.sh)
 export STUDENT_ID   ?=
-export CLUSTER_NAME ?= $(if $(STUDENT_ID),rw-$(STUDENT_ID),reliability-workshop)
+export CLUSTER_NAME ?= $(if $(STUDENT_ID),rw-$(STUDENT_ID))
 # true = DOCKER_CONFIG temporário sem credsStore (evita travas do credential helper do Docker Desktop)
 export DOCKER_ISOLATED_CONFIG ?= true
 # ASSUME_YES=true pula as confirmações interativas de setup/teardown

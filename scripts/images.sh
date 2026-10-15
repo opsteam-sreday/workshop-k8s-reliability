@@ -16,6 +16,7 @@
 #   build <app> <arch>   build + push de <tag>-<arch> (amd64 | arm64)
 #   manifest <app>       publica o índice <tag> a partir de <tag>-amd64 e <tag>-arm64
 #   all                  check + repo + build (todas as arquiteturas) + manifest das 3 apps
+export WORKSHOP_NO_CLUSTER=true   # não opera um cluster
 source "$(dirname "$0")/lib/common.sh"
 # tag/check não usam AWS (o pipeline roda os dois antes de ter credenciais).
 if [[ "${1:-}" != tag && "${1:-}" != check ]]; then
