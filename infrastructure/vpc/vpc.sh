@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # VPC do cluster (stack CloudFormation ${CLUSTER_NAME}-vpc) segundo o plano de endereçamento (README.md):
-#   reliability-workshop -> 10.200.0.0/16 ; rw-<prefixo>NN (ex.: rw-aluno07) -> 10.(200+NN).0.0/16, NN = 1..40
+#   rw-<prefixo>NN (ex.: rw-aluno07) -> 10.(200+NN).0.0/16, NN = 1..40 (10.200 fica livre: VPC_SECOND_OCTET=200)
 #   VPC_SECOND_OCTET=<200..240> sobrescreve o cálculo (IDs de aluno sem número no final).
 # As 2 AZs giram por cluster (NAT na AZ A): os NATs da turma se distribuem entre as AZs elegíveis.
 #
@@ -15,7 +15,6 @@ EXCLUDED_AZ_IDS="${EXCLUDED_AZ_IDS:-use1-az3}"
 
 second_octet() {
   if [[ -n "${VPC_SECOND_OCTET:-}" ]]; then echo "$VPC_SECOND_OCTET"
-  elif [[ "$CLUSTER_NAME" == "reliability-workshop" ]]; then echo 200
   elif [[ "$CLUSTER_NAME" =~ ^rw-[a-z]*0*([0-9]+)$ ]] && (( BASH_REMATCH[1] >= 1 && BASH_REMATCH[1] <= 40 )); then
     echo $((200 + BASH_REMATCH[1]))
   else

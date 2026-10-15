@@ -13,6 +13,7 @@
 #   down     teardown de todos os ambientes da turma (DELETE_IMAGES=true remove também as imagens)
 #   profile  imprime o ~/.aws/config de um aluno: scripts/fleet.sh profile <roster.csv> <student_id>
 # Estado/logs por aluno: .workshop/fleet/rw-<id>/ (kubeconfig, overlay, credenciais HyperDX, up.log, down.log)
+export WORKSHOP_NO_CLUSTER=true   # cada aluno define o próprio CLUSTER_NAME (student_env)
 source "$(dirname "$0")/lib/common.sh"
 require aws python3
 

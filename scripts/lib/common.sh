@@ -7,24 +7,22 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
 
 export AWS_REGION="${AWS_REGION:-us-east-1}"
-# Turma com um cluster por aluno (mesma conta): STUDENT_ID=aluno01 => cluster rw-aluno01 e TODOS os recursos
-# com esse prefixo (tabela, role/policy da Orders API, role do aluno, secret do HyperDX). Ver scripts/fleet.sh.
+# Um cluster por aluno (mesma conta), inclusive o instrutor (ex.: aluno01): STUDENT_ID=aluno01 => cluster
+# rw-aluno01 e TODOS os recursos com esse prefixo (tabela, role/policy da Orders API, role do aluno, secret do
+# HyperDX). Ver scripts/fleet.sh. Scripts que não operam um cluster (imagens, locks, pipeline, Identity Center)
+# definem WORKSHOP_NO_CLUSTER=true antes de carregar este arquivo.
 if [[ -n "${STUDENT_ID:-}" ]]; then
   [[ "$STUDENT_ID" =~ ^[a-z0-9]{1,16}$ ]] || { echo "STUDENT_ID inválido: '$STUDENT_ID' (use [a-z0-9], até 16)" >&2; exit 1; }
   export CLUSTER_NAME="${CLUSTER_NAME:-rw-${STUDENT_ID}}"
 fi
-export CLUSTER_NAME="${CLUSTER_NAME:-reliability-workshop}"
-export K8S_VERSION="${K8S_VERSION:-1.36}"
-if [[ "$CLUSTER_NAME" == "reliability-workshop" ]]; then
-  # Ambiente único (instrutor): nomes históricos, usados na documentação dos labs.
-  export TABLE_NAME="${TABLE_NAME:-workshop-orders}"
-  export ORDERS_ROLE_NAME="${ORDERS_ROLE_NAME:-eks-orders-api-role}"
-  export ORDERS_POLICY_NAME="${ORDERS_POLICY_NAME:-orders-dynamodb-policy}"
-else
-  export TABLE_NAME="${TABLE_NAME:-${CLUSTER_NAME}-orders}"
-  export ORDERS_ROLE_NAME="${ORDERS_ROLE_NAME:-${CLUSTER_NAME}-orders-api}"
-  export ORDERS_POLICY_NAME="${ORDERS_POLICY_NAME:-${CLUSTER_NAME}-orders-dynamodb}"
+if [[ -z "${CLUSTER_NAME:-}" && "${WORKSHOP_NO_CLUSTER:-false}" != true ]]; then
+  echo "Defina STUDENT_ID (ex.: export STUDENT_ID=aluno01 => cluster rw-aluno01; o instrutor usa o dele)" >&2; exit 1
 fi
+export CLUSTER_NAME="${CLUSTER_NAME:-}"
+export K8S_VERSION="${K8S_VERSION:-1.36}"
+export TABLE_NAME="${TABLE_NAME:-${CLUSTER_NAME}-orders}"
+export ORDERS_ROLE_NAME="${ORDERS_ROLE_NAME:-${CLUSTER_NAME}-orders-api}"
+export ORDERS_POLICY_NAME="${ORDERS_POLICY_NAME:-${CLUSTER_NAME}-orders-dynamodb}"
 export STUDENT_ROLE_NAME="${STUDENT_ROLE_NAME:-${CLUSTER_NAME}-student}"
 # Imagens compartilhadas por todos os clusters da conta (build único; os nós só fazem pull).
 export ECR_PREFIX="${ECR_PREFIX:-reliability-workshop}"

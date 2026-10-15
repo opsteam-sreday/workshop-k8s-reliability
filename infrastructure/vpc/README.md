@@ -1,7 +1,7 @@
 # VPCs do workshop — plano de endereçamento
 
-Uma VPC `/16` por cluster, entre `10.200.0.0/16` e `10.240.0.0/16` (41 redes, sem sobreposição: permite peering/VPN
-entre elas no futuro). Criada por `infrastructure/vpc/vpc.sh create` (chamado pelo `scripts/setup.sh` antes do eksctl)
+Uma VPC `/16` por cluster, entre `10.201.0.0/16` e `10.240.0.0/16` (40 alunos, inclusive o instrutor, sem
+sobreposição: permite peering/VPN entre elas no futuro; `10.200.0.0/16` fica livre). Criada por `infrastructure/vpc/vpc.sh create` (chamado pelo `scripts/setup.sh` antes do eksctl)
 a partir de `vpc.yaml`; removida pelo `scripts/teardown.sh` depois do cluster.
 
 | Subnet | CIDR | Uso |
@@ -12,7 +12,7 @@ a partir de `vpc.yaml`; removida pelo `scripts/teardown.sh` depois do cluster.
 | privada B | `10.X.128.0/18` | node groups |
 
 - **Privadas maiores:** o VPC CNI dá a cada Pod um IP da VPC (cada `m6i.large` reserva dezenas).
-- **NAT único por VPC (AZ A):** 41 clusters × 2 NATs não caberiam na quota de Elastic IPs (50). Se a AZ A cair, os
+- **NAT único por VPC (AZ A):** 40 clusters × 2 NATs não caberiam na quota de Elastic IPs (50). Se a AZ A cair, os
   nós da AZ B perdem saída para a internet — aceitável para um workshop.
 - **Endpoint da API:** público (kubectl de alunos e pipeline) + privado (nós falam com a API dentro da VPC). Estar em
   subnets públicas define onde ficam as ENIs do control plane; a exposição da API é o `clusterEndpoints`.
@@ -22,7 +22,6 @@ a partir de `vpc.yaml`; removida pelo `scripts/teardown.sh` depois do cluster.
 
 | Cluster | VPC | AZ A (NAT) | AZ B |
 |---|---|---|---|
-| `reliability-workshop` (instrutor) | `10.200.0.0/16` | us-east-1a | us-east-1b |
 | `rw-aluno01` | `10.201.0.0/16` | us-east-1b | us-east-1c |
 | `rw-aluno02` | `10.202.0.0/16` | us-east-1c | us-east-1f |
 | `rw-aluno03` | `10.203.0.0/16` | us-east-1f | us-east-1d |

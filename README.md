@@ -51,7 +51,7 @@ scripts k6 e cinco laboratórios. O status de validação de cada item está em
 ```text
 eks-reliability-workshop/
 ├── README.md · IMPLEMENTATION_PROGRESS.md · pytest.ini
-├── infrastructure/   vpc/ (VPC por cluster, plano 10.200–10.240.0.0/16) · eksctl.yaml · dynamodb.sh · dynamodb-table.json · pod-identity.sh
+├── infrastructure/   vpc/ (VPC por cluster, plano 10.201–10.240.0.0/16) · eksctl.yaml · dynamodb.sh · dynamodb-table.json · pod-identity.sh
 │                     orders-dynamodb-policy.json · pod-identity-trust.json · cluster-autoscaler-values.yaml
 ├── apps/             shared/workshop_common · bff-api · orders-api · inventory-api (app/, tests/, Dockerfile)
 ├── kubernetes/       platform/ (namespaces, PriorityClasses, otel-config, NetworkPolicies do namespace)
@@ -128,6 +128,7 @@ Ou diretamente pelos scripts:
 git clone <este-repo> && cd eks-reliability-workshop
 aws sts get-caller-identity                 # confirme conta e região
 export AWS_REGION=us-east-1                  # opcional (padrão us-east-1)
+export STUDENT_ID=aluno01                    # obrigatório: cluster rw-aluno01 (o instrutor usa o dele)
 
 scripts/setup.sh      # ≈ 35–45 min: EKS, add-ons, DynamoDB, Pod Identity, CA, ClickStack, OTel, alertas
 scripts/deploy.sh     # build multi-arch + push ECR (só o que mudou) + deploy das 3 APIs + HPA
@@ -193,7 +194,7 @@ Como funciona (detalhes em `apps/orders-api/app/service.py` e `repository.py`):
 
 ## Segurança do ambiente
 
-- **EKS Pod Identity**: somente `ecommerce/orders-api-sa` recebe a role `eks-orders-api-role` (GetItem, PutItem, UpdateItem, Query na tabela e no GSI1; ABAC por namespace/SA/cluster). BFF e Inventory têm ServiceAccounts próprias **sem** permissões AWS.
+- **EKS Pod Identity**: somente `ecommerce/orders-api-sa` recebe a role `rw-<id>-orders-api` (GetItem, PutItem, UpdateItem, Query na tabela e no GSI1; ABAC por namespace/SA/cluster). BFF e Inventory têm ServiceAccounts próprias **sem** permissões AWS.
 - **IMDS bloqueado** para Pods: `disablePodIMDS` (hop limit 1) + NetworkPolicy de egress negando `169.254.169.254`.
 - **ValidatingAdmissionPolicy** `restrict-orders-api-sa`: só o ReplicaSet controller cria Pods com `orders-api-sa`, com a imagem `orders-api`; `kubectl debug` (containers efêmeros) negado.
 - **NetworkPolicies** de ingress: k6 → BFF → Orders → Inventory.

@@ -30,12 +30,13 @@ E precisamos provar que ele funciona **mesmo quando o cliente repete a requisiç
 | `kubectl`, `eksctl`, `helm`, `docker` (com `buildx`), `python3`, `perl` | Scripts do workshop |
 | `uuidgen`, `curl`, `jq` | Comandos deste lab |
 
-Variáveis padrão (podem ser sobrescritas antes de executar os scripts — ver `scripts/lib/common.sh`):
+Variáveis do seu ambiente (os demais nomes derivam do `STUDENT_ID` — ver `scripts/lib/common.sh`):
 
 ```bash
 export AWS_REGION=us-east-1
-export CLUSTER_NAME=reliability-workshop
-export TABLE_NAME=workshop-orders
+export STUDENT_ID=aluno07                 # use o seu ID
+export CLUSTER_NAME=rw-$STUDENT_ID
+export TABLE_NAME=rw-$STUDENT_ID-orders
 ```
 
 ## 4. Estado inicial
@@ -185,7 +186,7 @@ O script executa:
 
 | Teste | Esperado |
 |---|---|
-| `sts get-caller-identity` dentro da Orders API | `assumed-role/eks-orders-api-role/…` |
+| `sts get-caller-identity` dentro da Orders API | `assumed-role/rw-<id>-orders-api/…` |
 | `GetItem` e `Query` (GSI1) pela Orders API | permitidos |
 | `Scan`, `DescribeTable`, `DeleteItem`, `ListTables` pela Orders API | `AccessDenied` (least privilege) |
 | Pod com `bff-api-sa` / `inventory-api-sa` | `Unable to locate credentials` e `IMDS_BLOCKED` |
@@ -276,7 +277,7 @@ aws dynamodb get-item --region $AWS_REGION --table-name $TABLE_NAME --consistent
 - **Retenção:** 24 h lógicas (`expires_at`) + DynamoDB TTL. O TTL é **assíncrono** (pode levar dias); por isso a aplicação também verifica `expires_at`. Reusar a chave após a expiração cria uma nova operação.
 - **Três camadas de identidade (5.8), que não se confundem:**
   1. **Identidade Kubernetes** — a ServiceAccount do Pod (`orders-api-sa`), validada pelo API server. A ValidatingAdmissionPolicy restringe *quem* pode criar Pods com ela.
-  2. **Autenticação AWS** — o EKS Pod Identity Agent troca o token projetado da SA por credenciais temporárias da role `eks-orders-api-role` (session tags `kubernetes-namespace`, `kubernetes-service-account`, `eks-cluster-name`).
+  2. **Autenticação AWS** — o EKS Pod Identity Agent troca o token projetado da SA por credenciais temporárias da role `rw-<id>-orders-api` (session tags `kubernetes-namespace`, `kubernetes-service-account`, `eks-cluster-name`).
   3. **Autorização entre aplicações** — *qual serviço pode chamar qual* (NetworkPolicies BFF→Orders→Inventory). Isso não é IAM: a BFF não tem permissão para o DynamoDB, mas pode chamar a Orders API. Identidade do usuário final (`customer_id`) é **simulada** no workshop; em produção ela viria de um token autenticado, nunca do body.
 
 ## 9. Correção

@@ -198,7 +198,7 @@ aws eks list-clusters --region $AWS_REGION
 aws ec2 describe-volumes --region $AWS_REGION --filters Name=status,Values=available --query 'Volumes[].VolumeId'
 aws ec2 describe-nat-gateways --region $AWS_REGION --filter Name=state,Values=available --query 'NatGateways[].NatGatewayId'
 aws ec2 describe-addresses --region $AWS_REGION --query 'Addresses[?AssociationId==null].PublicIp'
-aws iam get-role --role-name eks-orders-api-role 2>&1 | grep -q NoSuchEntity && echo "role removida"
+aws iam list-roles --query "Roles[?starts_with(RoleName, 'rw-')].RoleName"   # vazio = roles removidas
 aws dynamodb list-tables --region $AWS_REGION
 ```
 

@@ -5,6 +5,7 @@
 #      scripts/lock.sh --check [app...]   só confere se cada pin de requirements.txt está no lock (sem rede;
 #                                         usado por scripts/images.sh check). Sem app = as 3.
 # Edite requirements.txt / shared/requirements-base.txt e rode scripts/lock.sh; faça commit dos dois.
+export WORKSHOP_NO_CLUSTER=true   # não opera um cluster
 source "$(dirname "$0")/lib/common.sh"
 check=false
 [[ "${1:-}" == "--check" ]] && { check=true; shift; }

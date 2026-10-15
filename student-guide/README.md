@@ -30,11 +30,8 @@ kubectl -n ecommerce get pods                        # bff-api, orders-api, inve
 ```
 
 Com `STUDENT_ID` exportado, os scripts e o `make` usam automaticamente os seus nomes (`CLUSTER_NAME=rw-<id>`,
-`TABLE_NAME=rw-<id>-orders`, role `rw-<id>-orders-api`). Nos labs, onde aparecer `reliability-workshop`,
-`workshop-orders` ou `eks-orders-api-role`, leia com o seu prefixo.
-
-**Ambiente único (cluster do instrutor):** `aws eks update-kubeconfig --name reliability-workshop --region us-east-1`
-com o perfil AWS fornecido. Os padrões das variáveis estão em `scripts/lib/common.sh`.
+`TABLE_NAME=rw-<id>-orders`, role `rw-<id>-orders-api`); sem ele, os scripts param pedindo o ID. Os nomes
+derivados estão em `scripts/lib/common.sh`.
 
 ## 2. Arquitetura
 
@@ -94,7 +91,7 @@ com o perfil AWS fornecido. Os padrões das variáveis estão em `scripts/lib/co
 | **Circuit Breaker** | CLOSED → OPEN após 5 falhas consecutivas. Em OPEN, rejeita na hora por 15 s e depois passa a HALF_OPEN, que permite 2 chamadas de teste e volta a CLOSED se ambas tiverem sucesso. O estado é **local a cada réplica** |
 | **Retry** | Somente a Orders API faz retry: no máximo 2, com backoff exponencial + jitter e orçamento total de 2 s. O retry para quando o circuito abre (evita retry amplification) |
 | **Idempotência** | `Idempotency-Key` (UUID) + hash canônico do payload + registro no DynamoDB com lease e fencing. Retries **nunca** duplicam pedido nem reserva |
-| **Pod Identity** | A ServiceAccount `orders-api-sa` está associada à IAM Role `eks-orders-api-role`. As outras SAs não têm credenciais e o IMDS do nó é bloqueado (hop limit 1 + NetworkPolicy) |
+| **Pod Identity** | A ServiceAccount `orders-api-sa` está associada à IAM Role `rw-<id>-orders-api`. As outras SAs não têm credenciais e o IMDS do nó é bloqueado (hop limit 1 + NetworkPolicy) |
 | **Observabilidade** | OpenTelemetry nas três APIs envia métricas, logs e traces via OTLP. No ClickStack, tudo é consultado no HyperDX. Um trace conecta BFF → Orders → Inventory → DynamoDB |
 
 ## 4. Contrato da API (`POST /orders`)

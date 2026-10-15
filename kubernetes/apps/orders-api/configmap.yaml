@@ -4,7 +4,7 @@ metadata:
   name: orders-config
   namespace: ecommerce
 data:
-  ORDERS_TABLE_NAME: workshop-orders            # substituído pelo deploy.sh
+  ORDERS_TABLE_NAME: rw-STUDENT-orders          # substituído pelo deploy.sh (rw-<id>-orders)
   AWS_REGION: us-east-1                         # substituído pelo deploy.sh
   INVENTORY_URL: http://inventory-api.ecommerce.svc.cluster.local:8080
   INVENTORY_TIMEOUT_MS: "500"

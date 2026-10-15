@@ -10,6 +10,7 @@
 #   GITHUB_ACTIONS_POLICY_ARN  policy anexada à role. Padrão: a policy gerenciada do workshop, gerada a partir de
 #                              infrastructure/github-actions/pipeline-policy.json para todos os ambientes da turma
 #                              (clusters rw-<aluno>, inclusive o do instrutor), na região AWS_REGION
+export WORKSHOP_NO_CLUSTER=true   # não opera um cluster
 source "$(dirname "$0")/../scripts/lib/common.sh"
 require aws git
 

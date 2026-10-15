@@ -24,7 +24,6 @@ sso_role() {   # imprime "<arn> <role-id>" da role SSO do permission set nesta c
 cmd="${1:-status}"
 case "$cmd" in
   create)
-    [[ "$CLUSTER_NAME" != "reliability-workshop" ]] || fail "Role de aluno exige STUDENT_ID (cluster rw-<aluno>)"
     [[ -n "${STUDENT_USERNAME:-}" ]] || fail "Defina STUDENT_USERNAME (username do aluno no Identity Center)"
     read -r sso_arn sso_id <<<"$(sso_role)"
     [[ "$sso_arn" == arn:* ]] || fail "Role SSO do permission set ${STUDENT_PERMISSION_SET} não existe nesta conta (atribua-o à conta: infrastructure/identity-center.sh)"

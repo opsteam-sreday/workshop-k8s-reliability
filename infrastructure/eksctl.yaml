@@ -10,7 +10,7 @@ metadata:
     workshop: kubernetes-reliability
     owner: ${WORKSHOP_OWNER}
 
-# VPC criada antes do cluster por infrastructure/vpc/vpc.sh (plano 10.200-10.240.0.0/16; o eksctl não a remove).
+# VPC criada antes do cluster por infrastructure/vpc/vpc.sh (plano 10.201-10.240.0.0/16, um por aluno; o eksctl não a remove).
 vpc:
   id: ${VPC_ID}
   subnets:
