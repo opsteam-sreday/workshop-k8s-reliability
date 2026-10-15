@@ -7,7 +7,7 @@ metadata:
 value: 1000
 globalDefault: false
 preemptionPolicy: PreemptLowerPriority
-description: "BFF e Orders API — caminho crítico de receita."
+description: "BFF, Orders e Inventory API — caminho crítico de receita (dependências síncronas incluídas)."
 ---
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass

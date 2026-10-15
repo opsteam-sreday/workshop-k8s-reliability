@@ -43,7 +43,7 @@ Esperado: HPA `orders-api` com `MINPODS 2`, `MAXPODS 12`, alvo `cpu: <x>%/60%`; 
 Revise a configuração que será exercitada:
 
 ```bash
-cat kubernetes/hpa/orders-api-hpa.yaml
+cat kubernetes/apps/orders-api/hpa.yaml
 kubectl -n ecommerce get deploy orders-api -o jsonpath='{.spec.template.spec.containers[0].resources}'; echo
 grep -E "scale-down|expander|new-pod" infrastructure/cluster-autoscaler-values.yaml
 ```
@@ -193,7 +193,7 @@ PriorityClass (prioridade 0). Quando o HPA levou a Orders (prioridade 1000) a 12
 ```
 
 Por isso o estado base agora define `priorityClassName: critical-services` na Inventory
-(`kubernetes/base/inventory-api.yaml`). Lição: **ausência de PriorityClass é uma prioridade (0)** — a
+(`kubernetes/apps/inventory-api/deployment.yaml`). Lição: **ausência de PriorityClass é uma prioridade (0)** — a
 mais baixa do cluster. Confira com:
 
 ```bash

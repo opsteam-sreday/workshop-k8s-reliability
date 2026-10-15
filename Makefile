@@ -14,7 +14,9 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 export AWS_REGION   ?= us-east-1
-export CLUSTER_NAME ?= reliability-workshop
+# STUDENT_ID=aluno01 => cluster rw-aluno01 e recursos com esse prefixo (turma: scripts/fleet.sh)
+export STUDENT_ID   ?=
+export CLUSTER_NAME ?= $(if $(STUDENT_ID),rw-$(STUDENT_ID),reliability-workshop)
 # true = DOCKER_CONFIG temporário sem credsStore (evita travas do credential helper do Docker Desktop)
 export DOCKER_ISOLATED_CONFIG ?= true
 # ASSUME_YES=true pula as confirmações interativas de setup/teardown
@@ -31,6 +33,7 @@ MB        ?= 700
 WORKERS   ?= 2
 SLACK     ?= 100
 MINUTES   ?= 15
+PRINCIPALS ?=
 
 K6_ARGS = $(if $(RATE),RATE=$(RATE)) $(if $(DURATION),DURATION=$(DURATION)) $(if $(VUS),VUS=$(VUS))
 NS = kubectl -n ecommerce
@@ -44,7 +47,7 @@ help: ## Lista os alvos disponíveis
 	@echo "Variáveis: AWS_REGION=$(AWS_REGION) CLUSTER_NAME=$(CLUSTER_NAME) ASSUME_YES=$(ASSUME_YES) DOCKER_ISOLATED_CONFIG=$(DOCKER_ISOLATED_CONFIG)"
 
 ##@ Pré-requisitos e testes locais (sem AWS)
-.PHONY: check test local-stack
+.PHONY: check test local-stack lock
 check: ## Verifica ferramentas e credenciais AWS
 	@for t in aws kubectl eksctl helm docker python3 perl; do \
 	  if command -v $$t >/dev/null; then printf '  ✔ %s\n' $$t; else printf '  ✘ %s (ausente)\n' $$t; missing=1; fi; done; \
@@ -58,14 +61,20 @@ local-stack: ## Sobe DynamoDB Local + 3 APIs localmente (Ctrl+C para parar)
 	@test -x .venv/bin/python || scripts/test.sh >/dev/null
 	.venv/bin/python scripts/local/stack.py
 
+lock: ## Regenera apps/*/requirements.lock (todas as dependências com hash; rode após editar requirements*.txt)
+	scripts/lock.sh
+
 ##@ Ciclo de vida do ambiente (AWS — gera custo)
-.PHONY: up setup deploy deploy-only validate validate-quick validate-iam reset teardown status
+.PHONY: up setup images deploy deploy-only validate validate-quick validate-iam reset teardown status
 up: setup deploy validate ## Ambiente completo: setup + deploy + validate
 
 setup: ## Provisiona EKS, add-ons, DynamoDB, Pod Identity, CA, ClickStack, OTel e alertas (~40 min)
 	ASSUME_YES=$(ASSUME_YES) scripts/setup.sh
 
-deploy: ## Build/push das imagens no ECR + deploy das 3 APIs e do HPA
+images: ## Build/push multi-arch (amd64 + arm64) das imagens que ainda não estão no ECR
+	scripts/images.sh all
+
+deploy: ## Build/push das imagens multi-arch que faltam no ECR + deploy das 3 APIs e do HPA
 	scripts/deploy.sh
 
 deploy-only: ## Reaplica os manifests sem rebuild das imagens
@@ -110,6 +119,47 @@ alerts: ## (Re)cria webhook, saved searches e os 4 alertas no HyperDX
 	@source scripts/lib/common.sh && source scripts/lib/hyperdx-port-forward.sh && start_hyperdx_port_forward && \
 	  python3 observability/alerts/create_alerts.py --app-url http://localhost:$$HDX_APP_PORT \
 	    --api-url http://localhost:$$HDX_API_PORT --creds .workshop/hyperdx-credentials.json
+
+##@ Turma: um ambiente isolado por aluno (ROSTER=infrastructure/students.csv)
+ROSTER ?= infrastructure/students.csv
+.PHONY: fleet-quotas fleet-up fleet-access fleet-status fleet-down fleet-profile identity-center
+fleet-quotas: ## Quotas da região x necessário para a turma
+	scripts/fleet.sh quotas $(ROSTER)
+
+identity-center: ## [conta de GERENCIAMENTO] permission set + usuários + atribuição (WORKSHOP_ACCOUNT_ID=...)
+	infrastructure/identity-center.sh apply $(ROSTER)
+
+fleet-up: ## Build único + 1 ambiente por aluno em paralelo (PARALLEL=8)
+	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh up $(ROSTER)
+
+fleet-access: ## (Re)cria role exclusiva + access entry de cada aluno
+	scripts/fleet.sh access $(ROSTER)
+
+fleet-status: ## Estado do cluster e da validação de cada aluno
+	scripts/fleet.sh status $(ROSTER)
+
+fleet-down: ## Remove os ambientes da turma (DELETE_IMAGES=true remove as imagens)
+	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh down $(ROSTER)
+
+fleet-profile: ## ~/.aws/config de um aluno (STUDENT_ID=aluno01)
+	@scripts/fleet.sh profile $(ROSTER) $(STUDENT_ID)
+
+##@ GitHub Actions (.github/workflows/workshop-up.yml e workshop-down.yml)
+.PHONY: gha-role gha-role-delete access-entry hyperdx-credentials-pull hyperdx-credentials-push
+gha-role: ## Cria a policy restrita do workshop + role OIDC do pipeline
+	infrastructure/github-actions.sh create
+
+gha-role-delete: ## Remove a role do pipeline e o OIDC provider criado por ela
+	infrastructure/github-actions.sh delete
+
+access-entry: ## Dá acesso admin ao cluster (PRINCIPALS="arn ..."; vazio = você)
+	infrastructure/access-entry.sh grant $(PRINCIPALS)
+
+hyperdx-credentials-pull: ## Baixa do Secrets Manager as credenciais do HyperDX (ambiente criado pelo pipeline)
+	scripts/hyperdx-credentials.sh pull
+
+hyperdx-credentials-push: ## Envia ao Secrets Manager as credenciais do HyperDX (ambiente criado localmente)
+	scripts/hyperdx-credentials.sh push
 
 ##@ Acesso
 .PHONY: hyperdx bff-port-forward hyperdx-credentials
@@ -202,12 +252,12 @@ lab03-oom: ## Memory ballast acima do limit (MB=700) => OOMKilled
 	  -o jsonpath='{range .items[*]}{.metadata.name} restarts={.status.containerStatuses[0].restartCount} last={.status.containerStatuses[0].lastState.terminated.reason}{"\n"}{end}'
 
 lab03-noisy: ## Vizinho barulhento BestEffort no nó da Inventory
-	kubectl apply -f kubernetes/qos/noisy-neighbor.yaml
+	kubectl apply -f kubernetes/labs/qos/noisy-neighbor.yaml
 
 lab03-preempt: ## Cenário de preemption (Guaranteed + low priority + CA off + ballast + Orders +2)
 	labs/lab-03/qos.sh guaranteed
 	$(CA_SCALE) --replicas=0
-	$(NS) patch deploy inventory-api --patch-file kubernetes/priority/inventory-low-priority.patch.yaml
+	$(NS) patch deploy inventory-api --patch-file kubernetes/labs/priority/inventory-low-priority.patch.yaml
 	$(NS) rollout status deploy/inventory-api --timeout=3m
 	labs/lab-03/fill-capacity.py --slack $(SLACK)
 	$(NS) delete hpa orders-api --ignore-not-found
@@ -223,7 +273,7 @@ lab03-observe: ## Eventos Preempted/FailedScheduling e prioridades dos Pods
 	$(NS) get pods -o custom-columns=POD:.metadata.name,STATUS:.status.phase,PRIO:.spec.priority,NODE:.spec.nodeName
 
 lab03-fix: ## Correção: prioridade crítica na Inventory + CA ativo
-	$(NS) patch deploy inventory-api --patch-file kubernetes/priority/inventory-restore-priority.patch.yaml
+	$(NS) patch deploy inventory-api --patch-file kubernetes/labs/priority/inventory-restore-priority.patch.yaml
 	$(CA_SCALE) --replicas=1
 
 ##@ LAB 04 — Circuit Breaker

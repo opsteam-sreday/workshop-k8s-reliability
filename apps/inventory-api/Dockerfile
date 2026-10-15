@@ -1,6 +1,8 @@
 # Build context: apps/   (docker build -f apps/inventory-api/Dockerfile apps/)
 # Espelho público do Docker Official Image no ECR Public (evita rate limit do Docker Hub)
-FROM public.ecr.aws/docker/library/python:3.12-slim AS base
+# Fixada por digest (índice multi-arch: amd64 e arm64); a tag é só legível. Atualize os dois juntos:
+#   docker buildx imagetools inspect public.ecr.aws/docker/library/python:3.12-slim   (linha "Digest:")
+FROM public.ecr.aws/docker/library/python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -9,9 +11,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app/shared
 
 WORKDIR /app
-COPY shared/requirements-base.txt shared/requirements-base.txt
-COPY inventory-api/requirements.txt service/requirements.txt
-RUN cd service && pip install -r requirements.txt
+# Lock completo com hashes (scripts/lock.sh): instala exatamente esses pacotes, nada resolvido no build.
+COPY inventory-api/requirements.lock service/requirements.lock
+RUN pip install --require-hashes --no-deps -r service/requirements.lock
 
 COPY shared/workshop_common shared/workshop_common
 COPY inventory-api/app service/app

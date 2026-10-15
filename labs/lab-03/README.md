@@ -69,7 +69,7 @@ labs/lab-03/qos.sh burstable      # requests 100m/128Mi, limits 500m/512Mi -> Bu
 labs/lab-03/qos.sh guaranteed     # requests == limits 500m/512Mi          -> Guaranteed
 ```
 
-Os perfis estão em `kubernetes/qos/inventory-*.patch.json` (JSON patch sobre `containers[0].resources`).
+Os perfis estão em `kubernetes/labs/qos/inventory-*.patch.json` (JSON patch sobre `containers[0].resources`).
 A Inventory API usa `strategy: Recreate` (réplica única com estado em memória), então cada troca de perfil
 **recria o Pod** — e reinicia o estoque/reservas em memória.
 
@@ -145,7 +145,7 @@ Pedidos já `CONFIRMED` no DynamoDB continuam lá, mas a Inventory "esqueceu" as
 
 ```bash
 labs/lab-03/qos.sh besteffort
-kubectl apply -f kubernetes/qos/noisy-neighbor.yaml        # 2x `yes` no MESMO nó da Inventory (podAffinity), auto-encerra em 10 min
+kubectl apply -f kubernetes/labs/qos/noisy-neighbor.yaml        # 2x `yes` no MESMO nó da Inventory (podAffinity), auto-encerra em 10 min
 kubectl -n loadtest get pod noisy-neighbor -o wide
 scripts/k6.sh create-orders.js RATE=5 DURATION=2m
 kubectl top pods -A --sort-by=cpu | head
@@ -172,7 +172,7 @@ labs/lab-03/qos.sh guaranteed
 kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=0
 
 # B.4 — ANTI-PATTERN INTENCIONAL: dependência transacional com prioridade baixa
-kubectl -n ecommerce patch deploy inventory-api --patch-file kubernetes/priority/inventory-low-priority.patch.yaml
+kubectl -n ecommerce patch deploy inventory-api --patch-file kubernetes/labs/priority/inventory-low-priority.patch.yaml
 kubectl -n ecommerce rollout status deploy/inventory-api
 
 # B.5 — ocupar a CPU livre dos nós apps com ballasts de prioridade critical-services (deixa 100m livres por nó)
@@ -277,7 +277,7 @@ do serviço. Uma dependência síncrona do caminho crítico tem, no mínimo, a m
 
 ```bash
 # 1. Dependência transacional com a mesma prioridade do caminho crítico
-kubectl -n ecommerce patch deploy inventory-api --patch-file kubernetes/priority/inventory-restore-priority.patch.yaml
+kubectl -n ecommerce patch deploy inventory-api --patch-file kubernetes/labs/priority/inventory-restore-priority.patch.yaml
 
 # 2. Capacidade: reativar o Cluster Autoscaler
 kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=1
@@ -311,7 +311,7 @@ scripts/k6.sh create-orders.js RATE=5 DURATION=1m   # thresholds OK (http_req_fa
 
 1. **Eviction controlada (opcional):** com `labs/lab-03/qos.sh besteffort`, eleve a pressão de memória no nó:
    `scripts/fault.sh inventory memory 2048` (teto `INVENTORY_MEMORY_STRESS_MAX_MB=2048` — a carga é limitada por
-   design). Repita junto com `kubectl apply -f kubernetes/qos/noisy-neighbor.yaml`. Observe `kubectl describe node`
+   design). Repita junto com `kubectl apply -f kubernetes/labs/qos/noisy-neighbor.yaml`. Observe `kubectl describe node`
    (condição `MemoryPressure`) e os eventos `Evicted`. Discuta: em nós com pouca memória livre, o **OOM killer do
    kernel** pode agir antes da eviction do kubelet (que avalia a cada ~10 s); como o `oom_score_adj` do BestEffort é
    1000, ele morre primeiro de qualquer forma. Com 2048 MiB num `m6i.large` a eviction pode **não** ocorrer — explique
@@ -336,7 +336,7 @@ scripts/k6.sh create-orders.js RATE=5 DURATION=1m   # thresholds OK (http_req_fa
 ```bash
 kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast --ignore-not-found
 kubectl -n loadtest delete pod noisy-neighbor --ignore-not-found
-scripts/reset.sh        # perfil Burstable, remove priorityClassName da Inventory, reaplica HPA, CA=1, limpa falhas
+scripts/reset.sh        # perfil Burstable, Inventory de volta a critical-services, reaplica HPA, CA=1, limpa falhas
 kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,QOS:.status.qosClass,PRIORITY:.spec.priorityClassName
 ```
 

@@ -1,0 +1,70 @@
+# Remove TODOS os recursos AWS do workshop (equivalente a `make teardown`).
+name: workshop-down
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: Região AWS
+        default: us-east-1
+        required: true
+      cluster_name:
+        description: Nome do cluster EKS
+        default: reliability-workshop
+        required: true
+      confirm:
+        description: Digite o nome do cluster para confirmar a remoção
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: workshop-env-${{ inputs.cluster_name }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ inputs.aws_region }}
+  CLUSTER_NAME: ${{ inputs.cluster_name }}
+  ASSUME_YES: "true"
+  KUBECTL_VERSION: v1.36.0
+  HELM_VERSION: v4.3.0
+
+jobs:
+  down:
+    if: inputs.confirm == inputs.cluster_name
+    runs-on: ubuntu-latest
+    environment: workshop
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Credenciais AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+          role-duration-seconds: 14400
+
+      - name: Ferramentas (kubectl, helm, eksctl)
+        run: |
+          curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" | tar -xz -C /tmp
+          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+          curl -fsSL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" | tar -xz -C /tmp
+          sudo install -m 0755 /tmp/eksctl /usr/local/bin/eksctl
+
+      # Sem acesso ao Kubernetes, o teardown não removeria os PVCs e deixaria volumes EBS órfãos.
+      - name: Acesso do pipeline ao cluster
+        run: |
+          if aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+            infrastructure/access-entry.sh grant
+          fi
+
+      - name: make teardown
+        run: make teardown
+
+      - name: Remover credenciais do HyperDX (Secrets Manager)
+        run: scripts/hyperdx-credentials.sh delete

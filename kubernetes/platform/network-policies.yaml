@@ -1,0 +1,23 @@
+# Requer VPC CNI com enableNetworkPolicy=true (configurado em infrastructure/eksctl.yaml).
+# Ingress: default deny no namespace; cada app libera só os fluxos dela (apps/*/networkpolicy.yaml).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-ingress, namespace: ecommerce}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# Egress: tudo permitido EXCETO o IMDS dos nós (169.254.169.254). Defesa em profundidade
+# junto com httpPutResponseHopLimit=1 (disablePodIMDS). O Pod Identity Agent usa
+# 169.254.170.23 e continua acessível.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: deny-node-imds-egress, namespace: ecommerce}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]

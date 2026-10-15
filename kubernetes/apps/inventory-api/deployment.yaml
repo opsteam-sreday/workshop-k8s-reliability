@@ -1,23 +1,26 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bff-api
+  name: inventory-api
   namespace: ecommerce
-  labels: {app.kubernetes.io/name: bff-api, app.kubernetes.io/part-of: reliability-workshop}
+  labels: {app.kubernetes.io/name: inventory-api, app.kubernetes.io/part-of: reliability-workshop}
 spec:
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 3
   selector:
-    matchLabels: {app.kubernetes.io/name: bff-api}
+    matchLabels: {app.kubernetes.io/name: inventory-api}
   strategy:
-    type: RollingUpdate
-    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+    type: Recreate   # réplica única com estado em memória (MVP)
   template:
     metadata:
-      labels: {app.kubernetes.io/name: bff-api, app.kubernetes.io/part-of: reliability-workshop}
+      labels: {app.kubernetes.io/name: inventory-api, app.kubernetes.io/part-of: reliability-workshop}
     spec:
-      serviceAccountName: bff-api-sa
+      serviceAccountName: inventory-api-sa
       automountServiceAccountToken: false
+      # Dependência transacional da Orders API: mesma prioridade do caminho crítico.
+      # Sem PriorityClass (prioridade 0), o scale-out da Orders (1000) PREEMPTA a Inventory —
+      # comportamento observado na validação real do LAB 02. O LAB 03 aplica o anti-pattern
+      # (low-priority-services) de propósito.
       priorityClassName: critical-services
       terminationGracePeriodSeconds: 30
       nodeSelector: {workload: apps}
@@ -28,22 +31,23 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: app
-          image: bff-api
+          image: inventory-api
           imagePullPolicy: IfNotPresent
           ports: [{name: http, containerPort: 8080}]
           envFrom:
             - configMapRef: {name: otel-config}
-            - configMapRef: {name: bff-config}
+            - configMapRef: {name: inventory-config}
           env:
             - {name: POD_NAME, valueFrom: {fieldRef: {fieldPath: metadata.name}}}
             - {name: POD_NAMESPACE, valueFrom: {fieldRef: {fieldPath: metadata.namespace}}}
             - {name: NODE_NAME, valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
-            - {name: OTEL_SERVICE_NAME, value: bff-api}
+            - {name: OTEL_SERVICE_NAME, value: inventory-api}
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE),k8s.node.name=$(NODE_NAME),k8s.deployment.name=bff-api
+              value: k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE),k8s.node.name=$(NODE_NAME),k8s.deployment.name=inventory-api
+          # Perfil Burstable (padrão). Perfis alternativos em kubernetes/labs/qos/.
           resources:
-            requests: {cpu: 200m, memory: 256Mi}
-            limits: {cpu: 1000m, memory: 256Mi}
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
           startupProbe:
             httpGet: {path: /health/startup, port: http}
             periodSeconds: 2
@@ -64,13 +68,3 @@ spec:
             capabilities: {drop: [ALL]}
           volumeMounts: [{name: tmp, mountPath: /tmp}]
       volumes: [{name: tmp, emptyDir: {sizeLimit: 64Mi}}]
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: bff-api
-  namespace: ecommerce
-  labels: {app.kubernetes.io/name: bff-api}
-spec:
-  selector: {app.kubernetes.io/name: bff-api}
-  ports: [{name: http, port: 8080, targetPort: http}]   # a porta admin (8081, loopback) NÃO é exposta

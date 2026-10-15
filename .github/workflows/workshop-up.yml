@@ -1,0 +1,129 @@
+# Provisiona o ambiente completo do workshop (equivalente a `make up`): imagens + setup + deploy + validate.
+# As imagens vêm do workflow images.yml (um job por app, multi-arch); este só faz o deploy delas.
+# Pré-requisitos (uma vez por conta/repositório): ver README › "Provisionamento via GitHub Actions".
+name: workshop-up
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: Região AWS
+        default: us-east-1
+        required: true
+      cluster_name:
+        description: Nome do cluster EKS
+        default: reliability-workshop
+        required: true
+      validate:
+        description: Executar scripts/validate.sh ao final
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write   # OIDC -> sts:AssumeRoleWithWebIdentity
+  contents: read
+
+# Um único up/down por cluster por vez (os dois workflows compartilham o grupo).
+concurrency:
+  group: workshop-env-${{ inputs.cluster_name }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ inputs.aws_region }}
+  CLUSTER_NAME: ${{ inputs.cluster_name }}
+  ASSUME_YES: "true"
+  DOCKER_ISOLATED_CONFIG: "false"
+  WORKSHOP_OWNER: github-actions
+  KUBECTL_VERSION: v1.36.0
+  HELM_VERSION: v4.3.0
+
+jobs:
+  images:
+    uses: ./.github/workflows/images.yml
+    with:
+      aws_region: ${{ inputs.aws_region }}
+
+  up:
+    needs: images
+    runs-on: ubuntu-latest
+    environment: workshop   # exigido pela trust policy da role (infrastructure/github-actions/oidc-role.yaml)
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Credenciais AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+          role-duration-seconds: 14400
+
+      - name: Ferramentas (kubectl, helm, eksctl)
+        run: |
+          curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" | tar -xz -C /tmp
+          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+          curl -fsSL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" | tar -xz -C /tmp
+          sudo install -m 0755 /tmp/eksctl /usr/local/bin/eksctl
+          kubectl version --client && helm version --short && eksctl version
+
+      - name: make check
+        run: make check
+
+      - name: Restaurar credenciais do HyperDX (Secrets Manager)
+        run: scripts/hyperdx-credentials.sh pull
+
+      - name: Acesso do pipeline a um cluster já existente
+        run: |
+          if aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+            infrastructure/access-entry.sh grant
+          else
+            echo "Cluster ainda não existe: o eksctl tornará este principal admin ao criá-lo."
+          fi
+
+      - name: make setup
+        run: make setup
+
+      - name: Guardar credenciais do HyperDX (Secrets Manager)
+        if: always()
+        run: |
+          if [[ -s .workshop/hyperdx-credentials.json ]]; then scripts/hyperdx-credentials.sh push
+          else echo "Sem credenciais para guardar (o setup não chegou à etapa do HyperDX)."; fi
+
+      - name: Acesso de administradores (EKS_ADMIN_PRINCIPAL_ARNS)
+        if: vars.EKS_ADMIN_PRINCIPAL_ARNS != ''
+        env:
+          EKS_ADMIN_PRINCIPAL_ARNS: ${{ vars.EKS_ADMIN_PRINCIPAL_ARNS }}
+        run: |
+          read -r -a arns <<<"$EKS_ADMIN_PRINCIPAL_ARNS"
+          infrastructure/access-entry.sh grant "${arns[@]}"
+
+      - name: make deploy-only (imagens publicadas pelo job images)
+        run: make deploy-only
+
+      - name: make validate
+        if: inputs.validate
+        run: make validate
+
+      - name: Resumo
+        if: always()
+        run: |
+          {
+            echo "## Workshop: ${CLUSTER_NAME} (${AWS_REGION})"
+            echo
+            echo '```bash'
+            echo "aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}"
+            echo "CLUSTER_NAME=${CLUSTER_NAME} AWS_REGION=${AWS_REGION} scripts/hyperdx-credentials.sh pull"
+            echo '```'
+            [[ -f .workshop/validation-report.md ]] && { echo; cat .workshop/validation-report.md; }
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Somente o relatório: .workshop/ também contém as credenciais do HyperDX, que ficam apenas no Secrets Manager.
+      - name: Relatório de validação
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: validation-report
+          path: .workshop/validation-report.md
+          if-no-files-found: ignore

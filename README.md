@@ -51,10 +51,13 @@ scripts k6 e cinco laboratórios. O status de validação de cada item está em
 ```text
 eks-reliability-workshop/
 ├── README.md · IMPLEMENTATION_PROGRESS.md · pytest.ini
-├── infrastructure/   eksctl.yaml · dynamodb.sh · dynamodb-table.json · pod-identity.sh
+├── infrastructure/   vpc/ (VPC por cluster, plano 10.200–10.240.0.0/16) · eksctl.yaml · dynamodb.sh · dynamodb-table.json · pod-identity.sh
 │                     orders-dynamodb-policy.json · pod-identity-trust.json · cluster-autoscaler-values.yaml
 ├── apps/             shared/workshop_common · bff-api · orders-api · inventory-api (app/, tests/, Dockerfile)
-├── kubernetes/       base/ · qos/ · priority/ · hpa/ · overlays/generated (gerado pelo deploy.sh)
+├── kubernetes/       platform/ (namespaces, PriorityClasses, otel-config, NetworkPolicies do namespace)
+│                     apps/<app>/ (Deployment, Service, SA, ConfigMap, NetworkPolicy; orders-api: + HPA, admission)
+│                     base/ (agrega platform + apps) · overlays/generated (gerado pelo deploy.sh)
+│                     labs/ (patches de QoS/prioridade e noisy-neighbor — não são estado desejado)
 ├── observability/    clickstack/ (values, bootstrap) · otel/ (gateway, agent) · alerts/ · queries/
 ├── load-tests/       create-orders.js · get-orders.js · stress-orders.js · inventory-errors.js
 │                     idempotency-concurrency.js · lib/common.js
@@ -73,7 +76,7 @@ eks-reliability-workshop/
 | eksctl | 0.231.0 | criação/remoção do cluster |
 | kubectl | 1.34+ | operação do cluster |
 | Helm | 3.x ou 4.x (testado 4.3.0) | Cluster Autoscaler, ClickStack, OTel Collectors |
-| Docker (buildx) | 29 | build das imagens `linux/amd64` |
+| Docker (buildx) | 29 | build das imagens multi-arch `linux/amd64` + `linux/arm64` (Docker Desktop já emula arm64/amd64; no Linux: `docker run --privileged --rm tonistiigi/binfmt --install arm64`) |
 | Python | 3.9+ no host (scripts) · 3.12 para testes locais | bootstrap do HyperDX, alertas, testes |
 | k6 (opcional) | 2.3.0 | os testes rodam DENTRO do cluster via `scripts/k6.sh`; local é opcional |
 
@@ -127,7 +130,7 @@ aws sts get-caller-identity                 # confirme conta e região
 export AWS_REGION=us-east-1                  # opcional (padrão us-east-1)
 
 scripts/setup.sh      # ≈ 35–45 min: EKS, add-ons, DynamoDB, Pod Identity, CA, ClickStack, OTel, alertas
-scripts/deploy.sh     # build + push ECR + deploy das 3 APIs + HPA
+scripts/deploy.sh     # build multi-arch + push ECR (só o que mudou) + deploy das 3 APIs + HPA
 scripts/validate.sh   # critérios de aceitação baseline → .workshop/validation-report.md
 ```
 
@@ -157,6 +160,10 @@ curl -s -X POST localhost:8080/orders -H "Idempotency-Key: $(uuidgen | tr A-Z a-
 | [LAB 03](labs/lab-03/README.md) | QoS & PriorityClass (throttling, OOMKilled, preemption) | `labs/lab-03/qos.sh …`, `labs/lab-03/fill-capacity.py` | ver README |
 | [LAB 04](labs/lab-04/README.md) | Circuit Breaker (CLOSED → OPEN → HALF_OPEN → CLOSED) | `scripts/fault.sh inventory latency 800 RESERVATIONS` + `labs/lab-04/watch-cb.sh` | ver README |
 | [LAB 05](labs/lab-05/README.md) | ClickStack Alerting (4 alertas, anti-pattern) | `scripts/fault.sh inventory http-503 …` + `scripts/k6.sh inventory-errors.js` | `labs/lab-05/compare-counts.sh` |
+
+**Turma com um ambiente por aluno** (mesma conta, isolamento por cluster/tabela/role + login via IAM Identity Center):
+`make fleet-quotas` · `make identity-center` · `make fleet-up` · `make fleet-down` — passo a passo no
+[guia do instrutor › 2.1](instructor-guide/README.md#21-turma-um-ambiente-isolado-por-aluno-mesma-conta).
 
 Entre laboratórios: `scripts/reset.sh`. Guias: [instrutor](instructor-guide/README.md) · [aluno](student-guide/README.md) ·
 [consultas HyperDX/SQL](observability/queries/README.md).
@@ -192,6 +199,41 @@ Como funciona (detalhes em `apps/orders-api/app/service.py` e `repository.py`):
 - **NetworkPolicies** de ingress: k6 → BFF → Orders → Inventory.
 - **API de injeção de falhas** escuta somente em `127.0.0.1:8081` dentro de cada Pod (acesso via `kubectl exec` por quem tem RBAC). Habilitada apenas com `WORKSHOP_MODE=true`.
 - Pod Security Admission `restricted`, containers non-root, `readOnlyRootFilesystem`, `drop: [ALL]`.
+
+## Provisionamento via GitHub Actions
+
+Três workflows executam os mesmos scripts do Quick start em um runner descartável:
+
+| Workflow | Equivale a | Entradas |
+|---|---|---|
+| `images` | `scripts/images.sh all` — um job por app, passo a passo: tag → lock → testes → build amd64 → build arm64 → índice multi-arch. Roda em push na `main` que mexa em `apps/**`, manualmente ou chamado pelo `workshop-up` | região |
+| `workshop-up` | `make up` (chama `images`, depois setup + deploy + validate) | região, nome do cluster, validate on/off |
+| `workshop-down` | `make teardown` | região, nome do cluster, `confirm` = nome do cluster |
+
+`workshop-up` e `workshop-down` usam o mesmo grupo de `concurrency` por cluster (nunca rodam up e down ao mesmo tempo).
+
+**Imagens:** cada app tem a própria tag (hash git de `apps/<app>` + `apps/shared`), então mexer em uma app só
+rebuilda ela. No ECR (repositórios `IMMUTABLE`) ficam `<tag>-amd64`, `<tag>-arm64` e `<tag>`, o índice multi-arch que os
+clusters usam (cada nó puxa a sua arquitetura). Tag já publicada = o job pula o build. Os jobs de `images` também
+usam o environment `workshop`: com *Required reviewers*, aprove os 3 jobs (bff, orders, inventory) de uma vez.
+
+**Configuração (uma vez por conta/repositório):**
+
+1. Crie a role OIDC do pipeline, escolhendo **explicitamente** a policy anexada (sem padrão — ver
+   `infrastructure/github-actions/oidc-role.yaml`). A trust policy só aceita jobs deste repositório no environment `workshop`:
+   ```bash
+   make gha-role   # policy restrita do workshop (ou GITHUB_ACTIONS_POLICY_ARN=<arn> para outra); imprime o ARN da role
+   ```
+2. No GitHub: **Settings › Environments › New environment** `workshop` (recomendado: *Required reviewers*) com as variáveis:
+   - `AWS_ROLE_ARN` = ARN impresso no passo 1;
+   - `EKS_ADMIN_PRINCIPAL_ARNS` (opcional) = ARNs IAM, separados por espaço, que também devem administrar o cluster
+     (ex.: `arn:aws:iam::<conta>:role/<sua-role>`). Sem isso, só o pipeline acessa um cluster que ele criou.
+3. **Actions › workshop-up › Run workflow.** O resumo do job traz o `update-kubeconfig` e o relatório de validação.
+
+**Estado entre execuções:** as credenciais do HyperDX (`.workshop/hyperdx-credentials.json`) ficam no AWS Secrets
+Manager (`reliability-workshop/<cluster>/hyperdx-credentials`), nunca em artifacts. Para usar localmente
+um ambiente criado pelo pipeline: `make hyperdx-credentials-pull`. Para o pipeline assumir um ambiente criado
+localmente: `make hyperdx-credentials-push` (o workflow concede a si mesmo acesso ao cluster via EKS access entry).
 
 ## Testes locais (sem AWS)
 

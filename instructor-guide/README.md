@@ -43,6 +43,40 @@ Faça com pelo menos 1 dia de antecedência:
 - [ ] Gere tráfego de base por 2 min (`scripts/k6.sh create-orders.js RATE=3 DURATION=2m`) para os gráficos não começarem vazios.
 - [ ] Se os alunos forem acessar o cluster, distribua o kubeconfig e as credenciais do HyperDX e confirme o acesso RBAC (é preciso permissão de `pods/exec` para usar `scripts/fault.sh`).
 
+### 2.1 Turma: um ambiente isolado por aluno (mesma conta)
+
+Cada linha do roster (`infrastructure/students.csv`, formato em `students.example.csv`, fora do git) vira um
+ambiente completo `rw-<id>` com isolamento próprio:
+
+| Recurso | Nome | Isolamento |
+|---|---|---|
+| Cluster EKS + VPC + ClickStack | `rw-<id>` | VPC e node groups próprios |
+| Tabela DynamoDB | `rw-<id>-orders` | só a Orders API do cluster `rw-<id>` grava (policy por tabela + session tag `eks-cluster-name`) |
+| Role dos Pods (Pod Identity) | `rw-<id>-orders-api` | trust só no cluster `rw-<id>` |
+| Role do aluno (humano) | `rw-<id>-student` | trust só na sessão SSO **daquele** usuário (`aws:userid`); acesso AWS só ao próprio cluster/tabela/secret; admin só no próprio cluster (access entry) |
+| Credenciais do HyperDX | Secrets Manager `reliability-workshop/rw-<id>/hyperdx-credentials` | legível só pela role do aluno |
+| Imagens | ECR `reliability-workshop/*` | compartilhadas, build único; nós só fazem pull. Tag por app = hash git de `apps/<app>` + `apps/shared` (`scripts/images.sh tag <app>`); `<tag>` é índice multi-arch (amd64 + arm64), repositórios `IMMUTABLE`; base fixada por digest e dependências só de `apps/*/requirements.lock` (com hash, `make lock`) |
+
+**Com 1 semana de antecedência:**
+
+1. `make fleet-quotas` — com 40 alunos, aumente em `us-east-1` **VPCs, Internet gateways e Elastic IPs** (padrão 5;
+   ~50), **NAT gateways por AZ** (padrão 5; ~20 — o NAT de cada cluster cai em uma AZ) e **vCPU On-Demand Standard** (≥ 600: 8 vCPU/aluno em repouso, até 14 no LAB 02). Peça com antecedência.
+2. Com credenciais da **conta de gerenciamento** da organização (dona do IAM Identity Center):
+   `WORKSHOP_ACCOUNT_ID=<conta do workshop> make identity-center` — cria o permission set `ReliabilityWorkshopStudent`
+   (só `sts:AssumeRole` em `rw-*-student`), os usuários (`CREATE_USERS=false` se o diretório for externo/SCIM) e a
+   atribuição à conta. Usuários criados via API recebem o convite pelo console (*Reset password → Send email*).
+
+**Na véspera (≈ 1 h para 40 alunos com `PARALLEL=8`; custo ≈ US$ 22/h para a turma em repouso):**
+
+3. `make fleet-up ASSUME_YES=true` — build único das imagens e, em paralelo, setup + deploy + role do aluno +
+   validação de cada ambiente. Estado e logs por aluno em `.workshop/fleet/rw-<id>/`.
+4. `make fleet-status` — todos `ACTIVE` e validação sem falhas. Se a role SSO ainda não existia no passo 3:
+   `make fleet-access`.
+5. Envie a cada aluno o resultado de `make fleet-profile STUDENT_ID=<id>` (bloco do `~/.aws/config`).
+
+**Depois do evento:** `make fleet-down ASSUME_YES=true` (as imagens ECR ficam; `DELETE_IMAGES=true` remove) e,
+na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastructure/students.csv`.
+
 ## 3. Roteiro por laboratório
 
 ### LAB 01 — First Successful Order
@@ -128,7 +162,7 @@ Faça com pelo menos 1 dia de antecedência:
 
 | Sintoma | Diagnóstico | Ação |
 |---|---|---|
-| `ImagePullBackOff` nas APIs | `kubectl -n ecommerce describe pod <pod>`: repositório ECR inexistente, tag errada ou imagem arm64 em nó x86 | Execute `scripts/deploy.sh` de novo (build `linux/amd64`). Confira `IMAGE_TAG` e `aws ecr describe-images --repository-name reliability-workshop/orders-api` |
+| `ImagePullBackOff` nas APIs | `kubectl -n ecommerce describe pod <pod>`: repositório ECR inexistente ou tag não publicada | Confira a tag (`scripts/images.sh tag orders-api`) e `aws ecr describe-images --repository-name reliability-workshop/orders-api`. Publique com `scripts/images.sh all` (ou o workflow `images`) e reaplique com `scripts/deploy.sh --skip-build` |
 | Pods `Pending` com `untolerated taint {workload: observability}` | O workload foi para o node group errado | As APIs usam `nodeSelector: workload=apps`. Verifique `kubectl get nodes -L workload`. No ClickStack, confira `observability/clickstack/values.yaml` |
 | Pods `Pending` com `Insufficient cpu` fora do LAB 02/03 | Sobras de laboratório (ballast, HPA alto, CA em 0) | `scripts/reset.sh`. Confira `kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler` (réplicas = 1) |
 | APIs nunca ficam Ready (readiness/liveness falhando) com NetworkPolicy | Possível bloqueio das probes do kubelet pela NetworkPolicy | **Diagnóstico temporário:** `kubectl -n ecommerce delete networkpolicy default-deny-ingress`. Se os Pods ficarem Ready, o problema é a policy: reaplique com `kubectl apply -k kubernetes/overlays/generated` e verifique a versão do VPC CNI (`enableNetworkPolicy`). Não deixe a policy removida |

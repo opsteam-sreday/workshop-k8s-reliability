@@ -15,15 +15,26 @@ Todos os laboratórios seguem o mesmo ciclo:
 | `bash`, `python3`, `curl` | scripts do workshop |
 | Navegador | HyperDX (UI do ClickStack) |
 
-Preparação, com os dados fornecidos pelo instrutor (conta/perfil AWS, região e nome do cluster):
+**Turma com um ambiente por aluno.** O instrutor envia o seu `STUDENT_ID` (ex.: `aluno07`) e um bloco para o
+`~/.aws/config`. Você entra pelo SSO e assume a **sua** role, que só enxerga o seu cluster `rw-<id>`, a sua tabela
+`rw-<id>-orders` e as suas credenciais do HyperDX:
 
 ```bash
-aws eks update-kubeconfig --name reliability-workshop --region us-east-1
-kubectl get nodes -L workload           # nós "apps" e "observability"
-kubectl -n ecommerce get pods           # bff-api, orders-api, inventory-api
+aws sso login --profile workshop-sso
+export AWS_PROFILE=workshop STUDENT_ID=aluno07       # use o seu ID
+aws sts get-caller-identity                          # assumed-role/rw-aluno07-student/...
+aws eks update-kubeconfig --name rw-$STUDENT_ID --region us-east-1
+make hyperdx-credentials-pull                        # login do HyperDX do seu ambiente
+kubectl get nodes -L workload                        # nós "apps" e "observability"
+kubectl -n ecommerce get pods                        # bff-api, orders-api, inventory-api
 ```
 
-Os scripts usam as variáveis `AWS_REGION`, `CLUSTER_NAME` e `TABLE_NAME`, com padrões em `scripts/lib/common.sh`. Exporte-as se o instrutor usar valores diferentes.
+Com `STUDENT_ID` exportado, os scripts e o `make` usam automaticamente os seus nomes (`CLUSTER_NAME=rw-<id>`,
+`TABLE_NAME=rw-<id>-orders`, role `rw-<id>-orders-api`). Nos labs, onde aparecer `reliability-workshop`,
+`workshop-orders` ou `eks-orders-api-role`, leia com o seu prefixo.
+
+**Ambiente único (cluster do instrutor):** `aws eks update-kubeconfig --name reliability-workshop --region us-east-1`
+com o perfil AWS fornecido. Os padrões das variáveis estão em `scripts/lib/common.sh`.
 
 ## 2. Arquitetura
 

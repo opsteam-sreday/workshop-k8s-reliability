@@ -7,14 +7,40 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
 
 export AWS_REGION="${AWS_REGION:-us-east-1}"
+# Turma com um cluster por aluno (mesma conta): STUDENT_ID=aluno01 => cluster rw-aluno01 e TODOS os recursos
+# com esse prefixo (tabela, role/policy da Orders API, role do aluno, secret do HyperDX). Ver scripts/fleet.sh.
+if [[ -n "${STUDENT_ID:-}" ]]; then
+  [[ "$STUDENT_ID" =~ ^[a-z0-9]{1,16}$ ]] || { echo "STUDENT_ID inválido: '$STUDENT_ID' (use [a-z0-9], até 16)" >&2; exit 1; }
+  export CLUSTER_NAME="${CLUSTER_NAME:-rw-${STUDENT_ID}}"
+fi
 export CLUSTER_NAME="${CLUSTER_NAME:-reliability-workshop}"
 export K8S_VERSION="${K8S_VERSION:-1.36}"
-export TABLE_NAME="${TABLE_NAME:-workshop-orders}"
-export ORDERS_ROLE_NAME="${ORDERS_ROLE_NAME:-eks-orders-api-role}"
-export ORDERS_POLICY_NAME="${ORDERS_POLICY_NAME:-orders-dynamodb-policy}"
+if [[ "$CLUSTER_NAME" == "reliability-workshop" ]]; then
+  # Ambiente único (instrutor): nomes históricos, usados na documentação dos labs.
+  export TABLE_NAME="${TABLE_NAME:-workshop-orders}"
+  export ORDERS_ROLE_NAME="${ORDERS_ROLE_NAME:-eks-orders-api-role}"
+  export ORDERS_POLICY_NAME="${ORDERS_POLICY_NAME:-orders-dynamodb-policy}"
+else
+  export TABLE_NAME="${TABLE_NAME:-${CLUSTER_NAME}-orders}"
+  export ORDERS_ROLE_NAME="${ORDERS_ROLE_NAME:-${CLUSTER_NAME}-orders-api}"
+  export ORDERS_POLICY_NAME="${ORDERS_POLICY_NAME:-${CLUSTER_NAME}-orders-dynamodb}"
+fi
+export STUDENT_ROLE_NAME="${STUDENT_ROLE_NAME:-${CLUSTER_NAME}-student}"
+# Imagens compartilhadas por todos os clusters da conta (build único; os nós só fazem pull).
+export ECR_PREFIX="${ECR_PREFIX:-reliability-workshop}"
 export APPS_INSTANCE_TYPE="${APPS_INSTANCE_TYPE:-m6i.large}"
 export OBS_INSTANCE_TYPE="${OBS_INSTANCE_TYPE:-m6i.xlarge}"
-export IMAGE_TAG="${IMAGE_TAG:-1.0.0}"
+# Imagens: ver scripts/images.sh. Uma tag por app; cada tag é um índice multi-arch (amd64 + arm64).
+APPS=(bff-api orders-api inventory-api)
+IMAGE_ARCHS=(amd64 arm64)
+# Tag = hash git do que entra no build da app (apps/<app>: código, Dockerfile, lock; apps/shared; .dockerignore).
+# Muda só quando isso muda e é igual em qualquer clone/commit (inclusive shallow). IMAGE_TAG fixa uma tag manual.
+image_tag() {
+  [[ -n "${IMAGE_TAG:-}" ]] && { echo "$IMAGE_TAG"; return; }
+  local trees
+  trees="$(git -C "$REPO_ROOT" rev-parse "HEAD:apps/$1" HEAD:apps/shared HEAD:apps/.dockerignore 2>/dev/null)" || return 1
+  git hash-object --stdin <<<"$trees" | cut -c1-12
+}
 export WORKSHOP_OWNER="${WORKSHOP_OWNER:-${USER:-workshop}}"
 
 # Versões fixadas (verificadas em 2026-10-14 — ver README, seção "Versões").
@@ -25,9 +51,12 @@ export CLICKSTACK_CHART_VERSION="${CLICKSTACK_CHART_VERSION:-3.4.0}"
 export OTEL_COLLECTOR_CHART_VERSION="${OTEL_COLLECTOR_CHART_VERSION:-0.176.0}"
 export K6_IMAGE="${K6_IMAGE:-grafana/k6:2.3.0}"
 
-STATE_DIR="$REPO_ROOT/.workshop"
+# STATE_DIR / OVERLAY_DIR / KUBECONFIG podem ser isolados por cluster (scripts/fleet.sh faz isso para rodar
+# vários setups em paralelo sem um sobrescrever o estado, o overlay ou o contexto kubectl do outro).
+STATE_DIR="${STATE_DIR:-$REPO_ROOT/.workshop}"
 mkdir -p "$STATE_DIR"
 export STATE_DIR
+export OVERLAY_DIR="${OVERLAY_DIR:-$REPO_ROOT/kubernetes/overlays/generated}"
 
 c_blue=$'\033[1;34m'; c_green=$'\033[1;32m'; c_yellow=$'\033[1;33m'; c_red=$'\033[1;31m'; c_off=$'\033[0m'
 info()  { echo "${c_blue}==>${c_off} $*"; }

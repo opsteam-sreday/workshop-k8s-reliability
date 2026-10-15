@@ -1,0 +1,69 @@
+# Role IAM assumida pelo GitHub Actions via OIDC (sem chaves de acesso guardadas como secrets).
+# Implantado por infrastructure/github-actions.sh — ver README › "Provisionamento via GitHub Actions".
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Kubernetes Reliability Workshop - role OIDC do GitHub Actions
+
+Parameters:
+  GitHubRepository:
+    Type: String
+    Description: "owner/repo autorizado a assumir a role"
+  GitHubEnvironment:
+    Type: String
+    Default: workshop
+    Description: "Somente jobs com 'environment: <valor>' podem assumir a role"
+  RoleName:
+    Type: String
+    Default: reliability-workshop-github-actions
+  PermissionsPolicyArn:
+    Type: String
+    AllowedPattern: "arn:aws:iam::(aws|[0-9]{12}):policy/.+"
+    Description: >-
+      Policy anexada à role (SEM valor padrão: escolha explícita de quem implanta). eksctl cria VPC, NAT,
+      CloudFormation, roles IAM, node groups e add-ons, então a policy precisa cobrir EKS, EC2, CloudFormation,
+      IAM, Auto Scaling, DynamoDB, ECR, SSM (AMIs) e Secrets Manager. A trust policy restringe a role ao repositório + environment.
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: "false se a conta já tiver o provider token.actions.githubusercontent.com"
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      Tags:
+        - {Key: workshop, Value: kubernetes-reliability}
+
+  GitHubActionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      MaxSessionDuration: 14400   # 4 h: setup + deploy + validate levam ~1 h
+      ManagedPolicyArns: [!Ref PermissionsPolicyArn]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepository}:environment:${GitHubEnvironment}
+      Tags:
+        - {Key: workshop, Value: kubernetes-reliability}
+
+Outputs:
+  RoleArn:
+    Description: Valor da variável AWS_ROLE_ARN do environment no GitHub
+    Value: !GetAtt GitHubActionsRole.Arn

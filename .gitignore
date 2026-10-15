@@ -5,3 +5,4 @@ __pycache__/
 .workshop/
 *.log
 kubernetes/overlays/generated/
+infrastructure/students.csv

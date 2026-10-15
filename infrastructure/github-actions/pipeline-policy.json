@@ -1,0 +1,144 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOnlyDiscovery",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity",
+        "ec2:Describe*", "autoscaling:Describe*",
+        "eks:List*", "eks:DescribeAddonVersions", "eks:DescribeAddonConfiguration", "eks:DescribeClusterVersions",
+        "cloudformation:List*", "cloudformation:Describe*", "cloudformation:Get*", "cloudformation:ValidateTemplate",
+        "iam:Get*", "iam:List*",
+        "ecr:GetAuthorizationToken"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NetworkingAndNodesInRegion",
+      "Effect": "Allow",
+      "Action": ["ec2:*", "autoscaling:*"],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "${AWS_REGION}"}}
+    },
+    {
+      "Sid": "EksctlStacks",
+      "Effect": "Allow",
+      "Action": "cloudformation:*",
+      "Resource": [
+        "arn:aws:cloudformation:${AWS_REGION}:${AWS_ACCOUNT_ID}:stack/eksctl-${CLUSTER_NAME}-*/*",
+        "arn:aws:cloudformation:${AWS_REGION}:${AWS_ACCOUNT_ID}:stack/${CLUSTER_NAME}-vpc/*"
+      ]
+    },
+    {
+      "Sid": "WorkshopCluster",
+      "Effect": "Allow",
+      "Action": "eks:*",
+      "Resource": [
+        "arn:aws:eks:${AWS_REGION}:${AWS_ACCOUNT_ID}:cluster/${CLUSTER_NAME}",
+        "arn:aws:eks:${AWS_REGION}:${AWS_ACCOUNT_ID}:nodegroup/${CLUSTER_NAME}/*",
+        "arn:aws:eks:${AWS_REGION}:${AWS_ACCOUNT_ID}:addon/${CLUSTER_NAME}/*",
+        "arn:aws:eks:${AWS_REGION}:${AWS_ACCOUNT_ID}:access-entry/${CLUSTER_NAME}/*",
+        "arn:aws:eks:${AWS_REGION}:${AWS_ACCOUNT_ID}:podidentityassociation/${CLUSTER_NAME}/*"
+      ]
+    },
+    {
+      "Sid": "WorkshopRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole", "iam:DeleteRole", "iam:TagRole", "iam:UntagRole", "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:DetachRolePolicy", "iam:PassRole",
+        "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile",
+        "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:TagInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/eksctl-${CLUSTER_NAME}-*",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-cluster-autoscaler",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ORDERS_ROLE_NAME}",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:instance-profile/eksctl-${CLUSTER_NAME}-*"
+      ]
+    },
+    {
+      "Sid": "AttachOnlyKnownPolicies",
+      "Effect": "Allow",
+      "Action": "iam:AttachRolePolicy",
+      "Resource": [
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/eksctl-${CLUSTER_NAME}-*",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-cluster-autoscaler",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ORDERS_ROLE_NAME}"
+      ],
+      "Condition": {
+        "ArnLike": {
+          "iam:PolicyARN": [
+            "arn:aws:iam::aws:policy/AmazonEKS*",
+            "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistry*",
+            "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+            "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
+            "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${ORDERS_POLICY_NAME}"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "OrdersPolicy",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreatePolicy", "iam:DeletePolicy", "iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:TagPolicy"
+      ],
+      "Resource": "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${ORDERS_POLICY_NAME}"
+    },
+    {
+      "Sid": "ServiceLinkedRoles",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": [
+            "eks.amazonaws.com", "eks-nodegroup.amazonaws.com",
+            "autoscaling.amazonaws.com", "elasticloadbalancing.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "OrdersTable",
+      "Effect": "Allow",
+      "Action": "dynamodb:*",
+      "Resource": [
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${TABLE_NAME}",
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${TABLE_NAME}/index/*"
+      ]
+    },
+    {
+      "Sid": "WorkshopImages",
+      "Effect": "Allow",
+      "Action": "ecr:*",
+      "Resource": "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT_ID}:repository/reliability-workshop/*"
+    },
+    {
+      "Sid": "EksAmis",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:GetParameters"],
+      "Resource": "arn:aws:ssm:${AWS_REGION}::parameter/aws/service/*"
+    },
+    {
+      "Sid": "HyperdxCredentials",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret", "secretsmanager:CreateSecret",
+        "secretsmanager:PutSecretValue", "secretsmanager:DeleteSecret", "secretsmanager:TagResource"
+      ],
+      "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:reliability-workshop/${CLUSTER_NAME}/*"
+    },
+    {
+      "Sid": "NeverModifyThePipelineItself",
+      "Effect": "Deny",
+      "Action": ["iam:*"],
+      "Resource": [
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${GITHUB_ACTIONS_ROLE_NAME}",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${GITHUB_ACTIONS_ROLE_NAME}"
+      ]
+    }
+  ]
+}

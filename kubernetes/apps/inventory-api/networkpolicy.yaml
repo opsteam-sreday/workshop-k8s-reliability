@@ -1,0 +1,9 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: inventory-api-ingress, namespace: ecommerce}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: inventory-api}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app.kubernetes.io/name: orders-api}}}]
+      ports: [{port: 8080, protocol: TCP}]

@@ -1,0 +1,9 @@
+# Recursos compartilhados pelo namespace/cluster: namespaces, níveis de prioridade,
+# config OTel comum e as NetworkPolicies que valem para TODOS os Pods de ecommerce.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - priorityclasses.yaml
+  - otel-config.yaml
+  - network-policies.yaml
