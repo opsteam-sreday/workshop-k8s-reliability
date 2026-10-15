@@ -10,8 +10,8 @@ kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast --igno
 kubectl -n ecommerce get pods -o name | grep "pod/iam-probe-" | xargs -r kubectl -n ecommerce delete --ignore-not-found >/dev/null || true
 
 info "Restaurando manifests base (perfil Burstable, Inventory com critical-services, HPA, ORDERS_CPU_WORK_MS=0)"
-if [[ -f "$REPO_ROOT/kubernetes/overlays/generated/kustomization.yaml" ]]; then
-  kubectl apply -k "$REPO_ROOT/kubernetes/overlays/generated" >/dev/null
+if [[ -f "$OVERLAY_DIR/kustomization.yaml" ]]; then
+  kubectl apply -k "$OVERLAY_DIR" >/dev/null
   # `kubectl apply` não remove campos adicionados por `kubectl patch/set` fora do manifest.
   kubectl -n ecommerce patch deploy inventory-api --patch-file "$REPO_ROOT/kubernetes/labs/priority/inventory-restore-priority.patch.yaml" >/dev/null
   kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS- >/dev/null 2>&1 || true

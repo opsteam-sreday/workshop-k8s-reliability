@@ -1,0 +1,47 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OwnCluster",
+      "Effect": "Allow",
+      "Action": [
+        "eks:DescribeCluster", "eks:ListNodegroups", "eks:DescribeNodegroup",
+        "eks:ListPodIdentityAssociations", "eks:DescribePodIdentityAssociation",
+        "eks:ListAddons", "eks:DescribeAddon", "eks:ListAccessEntries"
+      ],
+      "Resource": [
+        "arn:aws:eks:${AWS_REGION}:${AWS_ACCOUNT_ID}:cluster/${CLUSTER_NAME}",
+        "arn:aws:eks:${AWS_REGION}:${AWS_ACCOUNT_ID}:nodegroup/${CLUSTER_NAME}/*",
+        "arn:aws:eks:${AWS_REGION}:${AWS_ACCOUNT_ID}:addon/${CLUSTER_NAME}/*",
+        "arn:aws:eks:${AWS_REGION}:${AWS_ACCOUNT_ID}:podidentityassociation/${CLUSTER_NAME}/*"
+      ]
+    },
+    {
+      "Sid": "OwnTableReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan",
+        "dynamodb:DescribeTable", "dynamodb:DescribeTimeToLive"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${TABLE_NAME}",
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${TABLE_NAME}/index/*"
+      ]
+    },
+    {
+      "Sid": "OwnHyperdxCredentials",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+      "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:reliability-workshop/${CLUSTER_NAME}/*"
+    },
+    {
+      "Sid": "OwnOrdersIdentityReadOnly",
+      "Effect": "Allow",
+      "Action": ["iam:GetRole", "iam:ListAttachedRolePolicies", "iam:GetPolicy", "iam:GetPolicyVersion"],
+      "Resource": [
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ORDERS_ROLE_NAME}",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${ORDERS_POLICY_NAME}"
+      ]
+    }
+  ]
+}

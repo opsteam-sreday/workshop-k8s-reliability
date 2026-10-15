@@ -14,7 +14,9 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 export AWS_REGION   ?= us-east-1
-export CLUSTER_NAME ?= reliability-workshop
+# STUDENT_ID=aluno01 => cluster rw-aluno01 e recursos com esse prefixo (turma: scripts/fleet.sh)
+export STUDENT_ID   ?=
+export CLUSTER_NAME ?= $(if $(STUDENT_ID),rw-$(STUDENT_ID),reliability-workshop)
 # true = DOCKER_CONFIG temporário sem credsStore (evita travas do credential helper do Docker Desktop)
 export DOCKER_ISOLATED_CONFIG ?= true
 # ASSUME_YES=true pula as confirmações interativas de setup/teardown
@@ -111,6 +113,30 @@ alerts: ## (Re)cria webhook, saved searches e os 4 alertas no HyperDX
 	@source scripts/lib/common.sh && source scripts/lib/hyperdx-port-forward.sh && start_hyperdx_port_forward && \
 	  python3 observability/alerts/create_alerts.py --app-url http://localhost:$$HDX_APP_PORT \
 	    --api-url http://localhost:$$HDX_API_PORT --creds .workshop/hyperdx-credentials.json
+
+##@ Turma: um ambiente isolado por aluno (ROSTER=infrastructure/students.csv)
+ROSTER ?= infrastructure/students.csv
+.PHONY: fleet-quotas fleet-up fleet-access fleet-status fleet-down fleet-profile identity-center
+fleet-quotas: ## Quotas da região x necessário para a turma
+	scripts/fleet.sh quotas $(ROSTER)
+
+identity-center: ## [conta de GERENCIAMENTO] permission set + usuários + atribuição (WORKSHOP_ACCOUNT_ID=...)
+	infrastructure/identity-center.sh apply $(ROSTER)
+
+fleet-up: ## Build único + 1 ambiente por aluno em paralelo (PARALLEL=8)
+	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh up $(ROSTER)
+
+fleet-access: ## (Re)cria role exclusiva + access entry de cada aluno
+	scripts/fleet.sh access $(ROSTER)
+
+fleet-status: ## Estado do cluster e da validação de cada aluno
+	scripts/fleet.sh status $(ROSTER)
+
+fleet-down: ## Remove os ambientes da turma (DELETE_IMAGES=true remove as imagens)
+	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh down $(ROSTER)
+
+fleet-profile: ## ~/.aws/config de um aluno (STUDENT_ID=aluno01)
+	@scripts/fleet.sh profile $(ROSTER) $(STUDENT_ID)
 
 ##@ GitHub Actions (.github/workflows/workshop-up.yml e workshop-down.yml)
 .PHONY: gha-role gha-role-delete access-entry hyperdx-credentials-pull hyperdx-credentials-push

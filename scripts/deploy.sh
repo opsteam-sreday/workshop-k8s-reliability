@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build + push das 3 imagens para o Amazon ECR e deploy no namespace ecommerce.
-# Uso: scripts/deploy.sh [--skip-build]
+# Uso: scripts/deploy.sh [--skip-build | --build-only]
+#   --build-only  só build/push (a frota faz isso uma vez; os clusters usam --skip-build)
 source "$(dirname "$0")/lib/common.sh"
-require aws kubectl docker
+require aws kubectl python3
 account_id >/dev/null
 REGISTRY="$(ecr_registry)"
 SERVICES=(bff-api orders-api inventory-api)
@@ -19,11 +20,12 @@ if [[ "${DOCKER_ISOLATED_CONFIG:-false}" == "true" ]]; then
 fi
 
 if [[ "${1:-}" != "--skip-build" ]]; then
+  require docker
   info "Login no ECR ${REGISTRY}"
   aws ecr get-login-password --region "$AWS_REGION" | with_timeout 60 docker login --username AWS --password-stdin "$REGISTRY" >/dev/null \
     || fail "docker login no ECR falhou/expirou (tente DOCKER_ISOLATED_CONFIG=true scripts/deploy.sh)"
   for svc in "${SERVICES[@]}"; do
-    repo="reliability-workshop/${svc}"
+    repo="${ECR_PREFIX}/${svc}"
     aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" >/dev/null 2>&1 || \
       aws ecr create-repository --repository-name "$repo" --region "$AWS_REGION" \
         --image-scanning-configuration scanOnPush=true --tags Key=workshop,Value=kubernetes-reliability >/dev/null
@@ -42,17 +44,20 @@ if [[ "${1:-}" != "--skip-build" ]]; then
   done
 fi
 
-# Overlay gerado com valores da conta (imagens ECR, região e tabela).
-OVERLAY="$REPO_ROOT/kubernetes/overlays/generated"
+[[ "${1:-}" == "--build-only" ]] && { ok "Imagens publicadas (${ECR_PREFIX}/*:${IMAGE_TAG})"; exit 0; }
+
+# Overlay gerado com valores do cluster (imagens ECR, região e tabela).
+OVERLAY="$OVERLAY_DIR"
 mkdir -p "$OVERLAY"
+BASE_REL="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$REPO_ROOT/kubernetes/base" "$OVERLAY")"
 cat > "$OVERLAY/kustomization.yaml" <<YAML
 # GERADO por scripts/deploy.sh — não editar.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - ../../base
+  - ${BASE_REL}
 images:
-$(for svc in "${SERVICES[@]}"; do printf '  - name: %s\n    newName: %s/reliability-workshop/%s\n    newTag: "%s"\n' "$svc" "$REGISTRY" "$svc" "$IMAGE_TAG"; done)
+$(for svc in "${SERVICES[@]}"; do printf '  - name: %s\n    newName: %s/%s/%s\n    newTag: "%s"\n' "$svc" "$REGISTRY" "$ECR_PREFIX" "$svc" "$IMAGE_TAG"; done)
 patches:
   - target: {kind: ConfigMap, name: orders-config}
     patch: |-

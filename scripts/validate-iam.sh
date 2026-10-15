@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Testes positivos e NEGATIVOS de EKS Pod Identity e isolamento IAM.
-#   1. Orders API (orders-api-sa) acessa o DynamoDB — e SOMENTE o necessário (Scan/DescribeTable negados).
+#   1. Orders API (orders-api-sa) acessa o DynamoDB — e SOMENTE o necessário (Scan/DescribeTable negados),
+#      SÓ na tabela do próprio cluster (PutItem/GetItem em outra tabela da conta negados — isolamento da turma).
 #   2. bff-api-sa e inventory-api-sa NÃO obtêm credenciais AWS (sem associação; IMDS bloqueado).
 #   3. Ninguém consegue criar um Pod "avulso" com orders-api-sa (ValidatingAdmissionPolicy).
 #   4. kubectl debug (container efêmero) em Pods da Orders API é negado.
@@ -25,7 +26,9 @@ print("QUERY_OK")
 for name, call in [("SCAN", lambda: ddb.scan(TableName=table, Limit=1)),
                    ("DESCRIBE", lambda: ddb.describe_table(TableName=table)),
                    ("DELETEITEM", lambda: ddb.delete_item(TableName=table, Key={"PK": {"S": "x"}, "SK": {"S": "y"}})),
-                   ("LISTTABLES", lambda: ddb.list_tables())]:
+                   ("LISTTABLES", lambda: ddb.list_tables()),
+                   # Outra tabela da conta (ex.: de outro aluno): a policy só cobre a tabela deste cluster.
+                   ("OTHERTABLE", lambda: ddb.get_item(TableName=table + "-other-tenant", Key={"PK": {"S": "x"}, "SK": {"S": "y"}}))]:
     try:
         call(); print(name + "_ALLOWED")
     except botocore.exceptions.ClientError as e:
@@ -35,7 +38,7 @@ PY
 echo "$out" | sed 's/^/    /'
 grep -q "assumed-role/${ORDERS_ROLE_NAME}/" <<<"$out" && result PASS "Orders API assume ${ORDERS_ROLE_NAME} via Pod Identity" || result FAIL "Orders API não assumiu ${ORDERS_ROLE_NAME}"
 grep -q GETITEM_OK <<<"$out" && grep -q QUERY_OK <<<"$out" && result PASS "Orders API: GetItem/Query permitidos" || result FAIL "Orders API sem GetItem/Query"
-for op in SCAN DESCRIBE DELETEITEM LISTTABLES; do
+for op in SCAN DESCRIBE DELETEITEM LISTTABLES OTHERTABLE; do
   grep -q "${op}_DENIED AccessDenied" <<<"$out" && result PASS "Orders API: ${op} negado (least privilege)" || result FAIL "Orders API: ${op} deveria ser negado"
 done
 

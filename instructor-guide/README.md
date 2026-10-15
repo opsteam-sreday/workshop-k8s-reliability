@@ -43,6 +43,40 @@ Faça com pelo menos 1 dia de antecedência:
 - [ ] Gere tráfego de base por 2 min (`scripts/k6.sh create-orders.js RATE=3 DURATION=2m`) para os gráficos não começarem vazios.
 - [ ] Se os alunos forem acessar o cluster, distribua o kubeconfig e as credenciais do HyperDX e confirme o acesso RBAC (é preciso permissão de `pods/exec` para usar `scripts/fault.sh`).
 
+### 2.1 Turma: um ambiente isolado por aluno (mesma conta)
+
+Cada linha do roster (`infrastructure/students.csv`, formato em `students.example.csv`, fora do git) vira um
+ambiente completo `rw-<id>` com isolamento próprio:
+
+| Recurso | Nome | Isolamento |
+|---|---|---|
+| Cluster EKS + VPC + ClickStack | `rw-<id>` | VPC e node groups próprios |
+| Tabela DynamoDB | `rw-<id>-orders` | só a Orders API do cluster `rw-<id>` grava (policy por tabela + session tag `eks-cluster-name`) |
+| Role dos Pods (Pod Identity) | `rw-<id>-orders-api` | trust só no cluster `rw-<id>` |
+| Role do aluno (humano) | `rw-<id>-student` | trust só na sessão SSO **daquele** usuário (`aws:userid`); acesso AWS só ao próprio cluster/tabela/secret; admin só no próprio cluster (access entry) |
+| Credenciais do HyperDX | Secrets Manager `reliability-workshop/rw-<id>/hyperdx-credentials` | legível só pela role do aluno |
+| Imagens | ECR `reliability-workshop/*` | compartilhadas, build único; nós só fazem pull |
+
+**Com 1 semana de antecedência:**
+
+1. `make fleet-quotas` — com 40 alunos, aumente em `us-east-1` **VPCs, Internet gateways e Elastic IPs** (padrão 5;
+   ~50) e **vCPU On-Demand Standard** (≥ 600: 8 vCPU/aluno em repouso, até 14 no LAB 02). Peça com antecedência.
+2. Com credenciais da **conta de gerenciamento** da organização (dona do IAM Identity Center):
+   `WORKSHOP_ACCOUNT_ID=<conta do workshop> make identity-center` — cria o permission set `ReliabilityWorkshopStudent`
+   (só `sts:AssumeRole` em `rw-*-student`), os usuários (`CREATE_USERS=false` se o diretório for externo/SCIM) e a
+   atribuição à conta. Usuários criados via API recebem o convite pelo console (*Reset password → Send email*).
+
+**Na véspera (≈ 1 h para 40 alunos com `PARALLEL=8`; custo ≈ US$ 22/h para a turma em repouso):**
+
+3. `make fleet-up ASSUME_YES=true` — build único das imagens e, em paralelo, setup + deploy + role do aluno +
+   validação de cada ambiente. Estado e logs por aluno em `.workshop/fleet/rw-<id>/`.
+4. `make fleet-status` — todos `ACTIVE` e validação sem falhas. Se a role SSO ainda não existia no passo 3:
+   `make fleet-access`.
+5. Envie a cada aluno o resultado de `make fleet-profile STUDENT_ID=<id>` (bloco do `~/.aws/config`).
+
+**Depois do evento:** `make fleet-down ASSUME_YES=true` (as imagens ECR ficam; `DELETE_IMAGES=true` remove) e,
+na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastructure/students.csv`.
+
 ## 3. Roteiro por laboratório
 
 ### LAB 01 — First Successful Order

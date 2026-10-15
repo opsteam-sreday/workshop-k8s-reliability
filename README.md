@@ -161,6 +161,10 @@ curl -s -X POST localhost:8080/orders -H "Idempotency-Key: $(uuidgen | tr A-Z a-
 | [LAB 04](labs/lab-04/README.md) | Circuit Breaker (CLOSED → OPEN → HALF_OPEN → CLOSED) | `scripts/fault.sh inventory latency 800 RESERVATIONS` + `labs/lab-04/watch-cb.sh` | ver README |
 | [LAB 05](labs/lab-05/README.md) | ClickStack Alerting (4 alertas, anti-pattern) | `scripts/fault.sh inventory http-503 …` + `scripts/k6.sh inventory-errors.js` | `labs/lab-05/compare-counts.sh` |
 
+**Turma com um ambiente por aluno** (mesma conta, isolamento por cluster/tabela/role + login via IAM Identity Center):
+`make fleet-quotas` · `make identity-center` · `make fleet-up` · `make fleet-down` — passo a passo no
+[guia do instrutor › 2.1](instructor-guide/README.md#21-turma-um-ambiente-isolado-por-aluno-mesma-conta).
+
 Entre laboratórios: `scripts/reset.sh`. Guias: [instrutor](instructor-guide/README.md) · [aluno](student-guide/README.md) ·
 [consultas HyperDX/SQL](observability/queries/README.md).
 
