@@ -47,6 +47,11 @@ async def test_identity_mismatch_rejected(client):
     assert r.status_code == 403
 
 
+async def test_openapi_documents_order_body(client):
+    body = (await client.get("/openapi.json")).json()["paths"]["/orders"]["post"]["requestBody"]
+    assert body["required"] and body["content"]["application/json"]["example"]["items"]
+
+
 async def test_upstream_timeout_returns_504():
     def handler(request):
         raise httpx.ReadTimeout("timeout", request=request)
