@@ -7,6 +7,13 @@ Parameters:
   GitHubRepository:
     Type: String
     Description: "owner/repo autorizado a assumir a role"
+  GitHubRepositoryIds:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[0-9]+/[0-9]+$"
+    Description: >-
+      "<owner_id>/<repo_id>" (opcional). Org/repo com IDs imutáveis no subject OIDC enviam
+      sub = repo:<owner>@<owner_id>/<repo>@<repo_id>:environment:<env>; com isso a trust aceita esse formato também.
   GitHubEnvironment:
     Type: String
     Default: workshop
@@ -29,6 +36,7 @@ Parameters:
 
 Conditions:
   CreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+  HasRepositoryIds: !Not [!Equals [!Ref GitHubRepositoryIds, ""]]
 
 Resources:
   GitHubOidcProvider:
@@ -59,7 +67,16 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepository}:environment:${GitHubEnvironment}
+                token.actions.githubusercontent.com:sub: !If
+                  - HasRepositoryIds
+                  - - !Sub repo:${GitHubRepository}:environment:${GitHubEnvironment}
+                    - !Sub
+                      - repo:${Owner}@${OwnerId}/${Repo}@${RepoId}:environment:${GitHubEnvironment}
+                      - Owner: !Select [0, !Split ["/", !Ref GitHubRepository]]
+                        Repo: !Select [1, !Split ["/", !Ref GitHubRepository]]
+                        OwnerId: !Select [0, !Split ["/", !Ref GitHubRepositoryIds]]
+                        RepoId: !Select [1, !Split ["/", !Ref GitHubRepositoryIds]]
+                  - !Sub repo:${GitHubRepository}:environment:${GitHubEnvironment}
       Tags:
         - {Key: workshop, Value: kubernetes-reliability}
 
