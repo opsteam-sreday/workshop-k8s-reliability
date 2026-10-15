@@ -35,6 +35,13 @@ else
     "O eksctl lê infrastructure/eksctl.yaml (renderizado com conta, região e os IDs da VPC acima) e cria via CloudFormation: control plane com as ENIs nas subnets públicas, endpoint público + privado, control plane Kubernetes ${K8S_VERSION}, os add-ons (VPC CNI com Network Policy, CoreDNS, kube-proxy, Pod Identity Agent, Metrics Server, EBS CSI) e dois Managed Node Groups: 'apps' (onde rodam as APIs e o Cluster Autoscaler atua) e 'observability' (com taint, isolando o ClickStack dos experimentos de pressão). Também cria a Pod Identity Association do Cluster Autoscaler." \
     eksctl create cluster -f "$STATE_DIR/eksctl.rendered.yaml"
 fi
+# Logo após criar o cluster (e não no fim): se uma etapa seguinte falhar, os admins já conseguem investigar.
+if [[ -n "${EKS_ADMIN_PRINCIPAL_ARNS:-}" ]]; then
+  read -r -a admin_arns <<<"$EKS_ADMIN_PRINCIPAL_ARNS"
+  run "Conceder acesso admin ao cluster (EKS_ADMIN_PRINCIPAL_ARNS)" \
+    "Cria um EKS access entry com AmazonEKSClusterAdminPolicy para cada ARN IAM informado (separados por espaço). O criador do cluster já é admin; isto dá acesso a outros (ex.: instrutor quando quem cria é o pipeline)." \
+    "$REPO_ROOT/infrastructure/access-entry.sh" grant "${admin_arns[@]}"
+fi
 run "Configurar o kubectl para o novo cluster" \
   "Grava no ~/.kube/config as credenciais do cluster (autenticação via IAM) com o alias ${CLUSTER_NAME}." \
   aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION" --alias "$CLUSTER_NAME"
