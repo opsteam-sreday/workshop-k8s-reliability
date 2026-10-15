@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bff-api
+  namespace: ecommerce
+  labels: {app.kubernetes.io/name: bff-api}
+spec:
+  selector: {app.kubernetes.io/name: bff-api}
+  ports: [{name: http, port: 8080, targetPort: http}]   # a porta admin (8081, loopback) NÃO é exposta

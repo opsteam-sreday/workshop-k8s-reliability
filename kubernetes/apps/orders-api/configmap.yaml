@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orders-config
+  namespace: ecommerce
+data:
+  ORDERS_TABLE_NAME: workshop-orders            # substituído pelo deploy.sh
+  AWS_REGION: us-east-1                         # substituído pelo deploy.sh
+  INVENTORY_URL: http://inventory-api.ecommerce.svc.cluster.local:8080
+  INVENTORY_TIMEOUT_MS: "500"
+  INVENTORY_MAX_RETRIES: "2"
+  INVENTORY_RETRY_BASE_MS: "50"
+  INVENTORY_RETRY_MAX_BACKOFF_MS: "400"
+  INVENTORY_CALL_BUDGET_MS: "2000"
+  INVENTORY_MAX_CONCURRENT_REQUESTS: "10"
+  CB_FAILURE_THRESHOLD: "5"
+  CB_RECOVERY_TIMEOUT_SECONDS: "15"
+  CB_HALF_OPEN_MAX_CALLS: "2"
+  ORDERS_STOCK_PRECHECK: "true"
+  IDEMPOTENCY_TTL_SECONDS: "86400"
+  IDEMPOTENCY_LEASE_SECONDS: "10"
+  ORDERS_CPU_WORK_MS: "0"

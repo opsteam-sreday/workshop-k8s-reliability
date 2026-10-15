@@ -1,0 +1,17 @@
+# Configuração OTel/workshop compartilhada pelas 3 APIs (envFrom).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-config
+  namespace: ecommerce
+data:
+  # Gateway do OpenTelemetry Collector (namespace observability). Ver observability/otel/.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-gateway.observability.svc.cluster.local:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_SEMCONV_STABILITY_OPT_IN: http
+  OTEL_METRIC_EXPORT_INTERVAL: "10000"
+  DEPLOYMENT_ENVIRONMENT: workshop
+  # Workshop: habilita a API administrativa de injeção de falhas em 127.0.0.1:8081.
+  WORKSHOP_MODE: "true"
+  LOG_LEVEL: INFO
+  SHUTDOWN_DELAY_SECONDS: "5"

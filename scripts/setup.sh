@@ -63,7 +63,7 @@ run "Criar o namespace observability" \
   bash -c 'kubectl create namespace observability --dry-run=client -o yaml | kubectl apply -f -'
 run "Criar as PriorityClasses" \
   "critical-services (1000) para BFF/Orders/Inventory e low-priority-services (100), usada no anti-pattern do LAB 03. Elas definem quem é agendado primeiro e quem pode ser preemptado quando falta capacidade." \
-  kubectl apply -f "$REPO_ROOT/kubernetes/priority/priorityclasses.yaml"
+  kubectl apply -f "$REPO_ROOT/kubernetes/platform/priorityclasses.yaml"
 
 # ---------------------------------------------------------------- 4. Helm repos
 section "4/9 · Repositórios Helm"

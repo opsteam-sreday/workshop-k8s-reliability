@@ -64,13 +64,3 @@ spec:
             capabilities: {drop: [ALL]}
           volumeMounts: [{name: tmp, mountPath: /tmp}]
       volumes: [{name: tmp, emptyDir: {sizeLimit: 64Mi}}]
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: orders-api
-  namespace: ecommerce
-  labels: {app.kubernetes.io/name: orders-api}
-spec:
-  selector: {app.kubernetes.io/name: orders-api}
-  ports: [{name: http, port: 8080, targetPort: http}]   # a porta admin (8081, loopback) NÃO é exposta

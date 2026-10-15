@@ -65,9 +65,7 @@ patches:
 YAML
 
 info "Aplicando manifests"
-kubectl apply -f "$REPO_ROOT/kubernetes/priority/priorityclasses.yaml" >/dev/null
-kubectl apply -k "$OVERLAY"
-kubectl apply -f "$REPO_ROOT/kubernetes/hpa/orders-api-hpa.yaml"
+kubectl apply -k "$OVERLAY"   # plataforma (namespaces, PriorityClasses, NetworkPolicies) + apps (inclui o HPA)
 for svc in "${SERVICES[@]}"; do
   kubectl -n ecommerce rollout status "deploy/${svc}" --timeout=5m
 done

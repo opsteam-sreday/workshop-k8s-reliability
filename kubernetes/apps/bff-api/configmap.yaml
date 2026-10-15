@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bff-config
+  namespace: ecommerce
+data:
+  ORDERS_URL: http://orders-api.ecommerce.svc.cluster.local:8080
+  BFF_ORDERS_TIMEOUT_MS: "3000"
+  BFF_MAX_CONNECTIONS: "100"

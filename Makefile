@@ -123,10 +123,10 @@ gha-role-delete: ## Remove a role do pipeline e o OIDC provider criado por ela
 access-entry: ## Dá acesso admin ao cluster (PRINCIPALS="arn ..."; vazio = você)
 	infrastructure/access-entry.sh grant $(PRINCIPALS)
 
-hyperdx-credentials-pull: ## Baixa do SSM as credenciais do HyperDX (ambiente criado pelo pipeline)
+hyperdx-credentials-pull: ## Baixa do Secrets Manager as credenciais do HyperDX (ambiente criado pelo pipeline)
 	scripts/hyperdx-credentials.sh pull
 
-hyperdx-credentials-push: ## Envia ao SSM as credenciais do HyperDX (ambiente criado localmente)
+hyperdx-credentials-push: ## Envia ao Secrets Manager as credenciais do HyperDX (ambiente criado localmente)
 	scripts/hyperdx-credentials.sh push
 
 ##@ Acesso
@@ -220,12 +220,12 @@ lab03-oom: ## Memory ballast acima do limit (MB=700) => OOMKilled
 	  -o jsonpath='{range .items[*]}{.metadata.name} restarts={.status.containerStatuses[0].restartCount} last={.status.containerStatuses[0].lastState.terminated.reason}{"\n"}{end}'
 
 lab03-noisy: ## Vizinho barulhento BestEffort no nó da Inventory
-	kubectl apply -f kubernetes/qos/noisy-neighbor.yaml
+	kubectl apply -f kubernetes/labs/qos/noisy-neighbor.yaml
 
 lab03-preempt: ## Cenário de preemption (Guaranteed + low priority + CA off + ballast + Orders +2)
 	labs/lab-03/qos.sh guaranteed
 	$(CA_SCALE) --replicas=0
-	$(NS) patch deploy inventory-api --patch-file kubernetes/priority/inventory-low-priority.patch.yaml
+	$(NS) patch deploy inventory-api --patch-file kubernetes/labs/priority/inventory-low-priority.patch.yaml
 	$(NS) rollout status deploy/inventory-api --timeout=3m
 	labs/lab-03/fill-capacity.py --slack $(SLACK)
 	$(NS) delete hpa orders-api --ignore-not-found
@@ -241,7 +241,7 @@ lab03-observe: ## Eventos Preempted/FailedScheduling e prioridades dos Pods
 	$(NS) get pods -o custom-columns=POD:.metadata.name,STATUS:.status.phase,PRIO:.spec.priority,NODE:.spec.nodeName
 
 lab03-fix: ## Correção: prioridade crítica na Inventory + CA ativo
-	$(NS) patch deploy inventory-api --patch-file kubernetes/priority/inventory-restore-priority.patch.yaml
+	$(NS) patch deploy inventory-api --patch-file kubernetes/labs/priority/inventory-restore-priority.patch.yaml
 	$(CA_SCALE) --replicas=1
 
 ##@ LAB 04 — Circuit Breaker

@@ -54,7 +54,10 @@ eks-reliability-workshop/
 ├── infrastructure/   eksctl.yaml · dynamodb.sh · dynamodb-table.json · pod-identity.sh
 │                     orders-dynamodb-policy.json · pod-identity-trust.json · cluster-autoscaler-values.yaml
 ├── apps/             shared/workshop_common · bff-api · orders-api · inventory-api (app/, tests/, Dockerfile)
-├── kubernetes/       base/ · qos/ · priority/ · hpa/ · overlays/generated (gerado pelo deploy.sh)
+├── kubernetes/       platform/ (namespaces, PriorityClasses, otel-config, NetworkPolicies do namespace)
+│                     apps/<app>/ (Deployment, Service, SA, ConfigMap, NetworkPolicy; orders-api: + HPA, admission)
+│                     base/ (agrega platform + apps) · overlays/generated (gerado pelo deploy.sh)
+│                     labs/ (patches de QoS/prioridade e noisy-neighbor — não são estado desejado)
 ├── observability/    clickstack/ (values, bootstrap) · otel/ (gateway, agent) · alerts/ · queries/
 ├── load-tests/       create-orders.js · get-orders.js · stress-orders.js · inventory-errors.js
 │                     idempotency-concurrency.js · lib/common.js
@@ -217,8 +220,8 @@ Ambos usam o mesmo grupo de `concurrency` por cluster (nunca rodam up e down ao 
      (ex.: `arn:aws:iam::<conta>:role/<sua-role>`). Sem isso, só o pipeline acessa um cluster que ele criou.
 3. **Actions › workshop-up › Run workflow.** O resumo do job traz o `update-kubeconfig` e o relatório de validação.
 
-**Estado entre execuções:** as credenciais do HyperDX (`.workshop/hyperdx-credentials.json`) ficam no SSM Parameter
-Store (`/reliability-workshop/<cluster>/hyperdx-credentials`, SecureString), nunca em artifacts. Para usar localmente
+**Estado entre execuções:** as credenciais do HyperDX (`.workshop/hyperdx-credentials.json`) ficam no AWS Secrets
+Manager (`reliability-workshop/<cluster>/hyperdx-credentials`), nunca em artifacts. Para usar localmente
 um ambiente criado pelo pipeline: `make hyperdx-credentials-pull`. Para o pipeline assumir um ambiente criado
 localmente: `make hyperdx-credentials-push` (o workflow concede a si mesmo acesso ao cluster via EKS access entry).
 

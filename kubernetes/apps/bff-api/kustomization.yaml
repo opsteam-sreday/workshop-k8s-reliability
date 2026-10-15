@@ -1,0 +1,9 @@
+# Tudo que pertence à bff-api: workload, ServiceAccount, configuração e quem pode chamá-la.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml

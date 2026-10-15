@@ -1,13 +1,10 @@
+# Estado desejado completo do workshop: plataforma compartilhada + uma pasta por aplicação.
+# As imagens (ECR) e valores específicos da conta são definidos pelo overlay gerado
+# em kubernetes/overlays/generated/ pelo scripts/deploy.sh.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - namespaces.yaml
-  - serviceaccounts.yaml
-  - configmaps.yaml
-  - bff-api.yaml
-  - orders-api.yaml
-  - inventory-api.yaml
-  - networkpolicies.yaml
-  - admission-policy.yaml
-# As imagens (ECR) e valores específicos da conta são definidos pelo overlay gerado
-# em kubernetes/overlays/generated/ pelo scripts/deploy.sh.
+  - ../platform
+  - ../apps/bff-api
+  - ../apps/orders-api
+  - ../apps/inventory-api
