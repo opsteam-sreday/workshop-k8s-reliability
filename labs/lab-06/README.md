@@ -200,11 +200,19 @@ echo "A=$NODE_A  B=$NODE_B"
 kubectl -n ecommerce get pods -l 'app.kubernetes.io/name in (bff-api,orders-api)' -o wide --sort-by=.spec.nodeName
 ```
 
-**E2 — a regra é rígida.** Desligue o Cluster Autoscaler (senão ele cria um nó novo para a réplica pendente), ocupe a
-CPU livre **só do nó A** e peça 4 réplicas da Orders:
+**E2 — a regra é rígida.** Primeiro desligue o **Cluster Autoscaler (CA)**: o componente que adiciona nós ao node
+group `apps` (2 a 5 nós) quando há Pods `Pending` por falta de espaço, e remove nós ociosos. Ligado, ele veria a
+réplica pendente deste passo e criaria um 3º nó em 2–4 min — um nó com 0 réplicas, onde ela cabe sem violar o
+`maxSkew` — e o bloqueio que você quer observar sumiria. "Desligar" é escalar o Deployment dele para 0:
 
 ```bash
 kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=0
+kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler   # READY 0/0 = desligado
+```
+
+Agora ocupe a CPU livre **só do nó A** e peça 4 réplicas da Orders:
+
+```bash
 python3 labs/lab-03/fill-capacity.py --node $NODE_A --slack 100
 kubectl -n ecommerce patch hpa orders-api -p '{"spec":{"minReplicas":4}}'
 sleep 40
@@ -241,7 +249,9 @@ kubectl -n ecommerce rollout status deploy/orders-api && kubectl -n ecommerce ro
 kubectl -n ecommerce get pods -o wide --sort-by=.spec.nodeName
 labs/lab-06/count-responses.sh "$T0"
 
+# Religue o Cluster Autoscaler (desligado na E2). READY 1/1 = ligado.
 kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=1
+kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler
 ```
 
 ## 7. Observações
