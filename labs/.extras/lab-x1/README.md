@@ -12,6 +12,25 @@ O time precisa ser avisado quando pedidos ou consultas de estoque falham. A solu
 HyperDX, **quatro alertas que contam logs `ERROR`** por serviço e rota. Eles disparam — mas o número que mostram
 **não é** o número de requisições com erro, e há falhas que eles simplesmente não enxergam.
 
+Caminho de um log até a notificação:
+
+```mermaid
+flowchart LR
+  subgraph ecommerce
+    BFF[bff-api] --> ORD[orders-api] --> INV[inventory-api]
+  end
+  ORD -- "OTLP: logs, spans, métricas" --> GW
+  INV -- "OTLP" --> GW
+  BFF -- "OTLP" --> GW
+  AG["otel-agent (DaemonSet): kubeletstats + logs de outros namespaces"] --> GW
+  GW["otel-gateway"] -- "otlphttp" --> CH[("ClickStack / ClickHouse")]
+  CH --> AL{"Alerta HyperDX: COUNT(logs ERROR) ≥ 5 em 5 min"}
+  AL -- "estado ALERT" --> WH["alert-webhook (POST /alerts)"]
+```
+
+O alerta só enxerga o que chega como **linha de log com `level=ERROR`**: tudo o que muda a quantidade de linhas muda o
+alerta, mesmo sem mudar o impacto no cliente.
+
 ## 2. Hipótese
 
 1. Os quatro alertas disparam quando provocamos falhas (≥ 5 logs ERROR em 5 min).
@@ -94,6 +113,26 @@ Cada definição de alerta no código carrega o comentário obrigatório:
 
 ## 5. Comandos executáveis
 
+Qual falha alimenta qual alerta:
+
+```mermaid
+flowchart LR
+  F1["inventory http-503 RESERVATIONS"] --> R1["POST /inventory/reservations 503"] --> A1["Inventory Creation Errors"]
+  R1 --> R2["POST /orders 503 (Orders)"] --> A2["Orders Creation Errors"]
+  F2["orders db FAIL_READS"] --> R3["GET /orders 503 (DynamoDB)"] --> A3["Orders Query Errors"]
+  F3["inventory http-503 QUERIES"] --> R4["GET /inventory/{sku} 503 (precheck)"] --> A4["Inventory Query Errors"]
+  F4["orders crash-after-reservation"] --> R5["processo morre (exit 137), BFF 503"] -. "nenhum log ERROR" .-> A5["nenhum alerta conta"]
+```
+
+| Passo | Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|---|
+| 5.1 | Reserva de estoque falha | `fault.sh inventory http-503 RESERVATIONS` + k6 3 min | precheck `GET` ok; `POST /inventory/reservations` → 503; `POST /orders` → 503 | alertas *Inventory Creation Errors* e *Orders Creation Errors* em `ALERT` (5.4) |
+| 5.2 | Leituras do DynamoDB falham | `fault.sh orders db FAIL_READS` + k6 com `EXPECT_ERRORS=false` | `GET /orders` → 503; o k6 **falha** o threshold (esperado) | alerta *Orders Query Errors* em `ALERT` |
+| 5.3 | Precheck de estoque falha | `fault.sh inventory http-503 QUERIES` + k6 3 min | `GET /inventory/{sku}` → 503; a Orders recusa o pedido antes de reservar | alerta *Inventory Query Errors* em `ALERT` |
+| 5.4 | Notificação | aguardar 1–2 min após o tráfego | alertas avaliados a cada ~1 min sobre janelas de 5 min; o webhook recebe o payload | `logs deploy/alert-webhook \| grep "ALERTA RECEBIDO"`; UI → **Alerts** |
+| 5.5 | Medir o anti-pattern | `compare-counts.sh 15` | (a) `COUNT(logs ERROR)` ≈ **2 ×** (b) requisições distintas = (c) spans 5xx | saída do script, por serviço/rota |
+| 5.6 | Falha sem log ERROR | `fault.sh orders crash-after-reservation` + k6 sem retry | réplicas reiniciam (exit 137); BFF responde 503; *Orders Creation Errors* **não** conta | `RESTARTS > 0`, `exit=137`; consulta (e) do `compare-counts.sh` > 0 |
+
 ### 5.1 Disparar os alertas de criação (Orders + Inventory)
 
 ```bash
@@ -153,6 +192,23 @@ O script consulta o ClickHouse do ClickStack e mostra, por serviço/rota, na jan
 - **(d)** métrica `http.server.request.duration` (contagem de 5xx por método/rota/status);
 - **(e)** requisições 5xx na BFF sem nenhum log ERROR na Orders API.
 
+Por que (a) sai maior que (b) e (c) — uma requisição, duas linhas contadas:
+
+```mermaid
+sequenceDiagram
+  participant C as Cliente (k6)
+  participant O as orders-api
+  participant I as inventory-api
+  participant L as ClickStack (logs)
+  C->>O: POST /orders
+  O->>I: POST /inventory/reservations
+  I-->>O: 503 (falha injetada)
+  O->>L: ERROR "Inventory API indisponível" (log contextual)
+  O-->>C: 503 DEPENDENCY_UNAVAILABLE
+  O->>L: ERROR "HTTP request completed" status 503 (log de conclusão)
+  Note over L: 1 requisição = 2 logs ERROR → o alerta conta 2
+```
+
 Evidência da validação local do workshop:
 
 ```text
@@ -162,6 +218,25 @@ Evidência da validação local do workshop:
 ```
 
 ### 5.6 Falha SEM log ERROR
+
+O caso oposto — uma falha real que o alerta não vê:
+
+```mermaid
+sequenceDiagram
+  participant C as Cliente (k6)
+  participant B as bff-api
+  participant O as orders-api
+  participant I as inventory-api
+  participant L as ClickStack (logs)
+  C->>B: POST /orders
+  B->>O: POST /orders
+  O->>I: reserva o estoque
+  I-->>O: 201 (reserva aplicada)
+  O->>L: CRITICAL "FALHA INJETADA: encerrando o processo…" (level=FATAL)
+  Note over O: os._exit(137): sem log ERROR, sem "HTTP request completed"
+  B-->>C: 503 "Orders API indisponível"
+  Note over L: 0 logs ERROR na Orders → Orders Creation Errors não conta
+```
 
 ```bash
 scripts/fault.sh orders crash-after-reservation       # vale para TODAS as réplicas em execução
@@ -252,6 +327,13 @@ scripts/fault.sh all reset
 ```
 
 ## 10. Validação
+
+| Verificação | Comportamento esperado | Como verificar |
+|---|---|---|
+| Os quatro alertas dispararam | o webhook registrou `Inventory Creation Errors`, `Inventory Query Errors`, `Orders Creation Errors` e `Orders Query Errors` | comando Python abaixo (lista os nomes recebidos) |
+| Superestimação medida | (a) ≈ 2 × (b) nas rotas com log contextual; (b) = (c) | `compare-counts.sh 30` |
+| Subestimação medida | consulta (e) > 0 após a 5.6 | `compare-counts.sh 30` |
+| Falhas removidas | alertas voltam a `OK` quando a janela de 5 min deixa de ter ≥ 5 logs | UI → **Alerts**; webhook recebe `resolved`, se habilitado |
 
 ```bash
 kubectl -n observability exec deploy/alert-webhook -- python -c "

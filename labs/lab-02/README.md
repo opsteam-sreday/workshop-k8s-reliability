@@ -18,6 +18,34 @@ carga ↑ ──► CPU ↑ ──► HPA aumenta réplicas (segundos) ──►
                                          Cluster Autoscaler adiciona nós (minutos) ◄┘
 ```
 
+Fluxo completo do lab, com os tempos configurados (`hpa.yaml`, `cluster-autoscaler-values.yaml`, `stress-orders.js`):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K6 as k6 (nó observability)
+    participant ORD as Orders API
+    participant MS as Metrics Server
+    participant HPA as HPA orders-api
+    participant SCH as Scheduler
+    participant CA as Cluster Autoscaler
+    participant ASG as Node group apps (2..5)
+
+    K6->>ORD: POST /orders, rampa 1 min até 60 req/s, platô 6 min
+    ORD->>ORD: ~40 ms de CPU por pedido (ORDERS_CPU_WORK_MS=40)
+    MS->>HPA: uso de CPU por Pod
+    HPA->>HPA: "utilização = uso ÷ requests (250m) ≫ 60%"
+    HPA->>SCH: "replicas: 2 → … → 12 (degraus a cada 15 s)"
+    SCH-->>SCH: "réplicas sem espaço ficam Pending (Insufficient cpu)"
+    CA->>SCH: detecta Pods Pending
+    CA->>ASG: "scale-up 2 → 3+ (máx. 5)"
+    ASG-->>SCH: "nó novo Ready em ≈2–4 min"
+    SCH->>ORD: Pods Pending agendados no nó novo
+    K6-->>ORD: carga termina (≈7,5 min)
+    HPA->>HPA: "espera 120 s, depois −50% a cada 30 s até 2"
+    CA->>ASG: "nó subutilizado (< 50%) por 2 min → removido"
+```
+
 ## 2. Hipótese
 
 > "Sob carga de CPU, o HPA aumentará as réplicas da Orders API com base em `requests.cpu`. Quando as réplicas desejadas não couberem nos nós existentes, Pods ficarão `Pending` (`FailedScheduling`) e o Cluster Autoscaler adicionará nós ao node group `apps` até acomodá-los. Quando a carga parar, ambos reduzem a capacidade — com atraso intencional."
@@ -88,6 +116,18 @@ Em paralelo (terminal 3, se possível):
 kubectl -n ecommerce get hpa orders-api -w
 ```
 
+O que acompanhar em cada fase do teste:
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Custo de CPU ativado | `set env ORDERS_CPU_WORK_MS=40` | rollout da Orders; novas réplicas herdam a variável | `kubectl -n ecommerce rollout status deploy/orders-api` |
+| Rampa de carga (1 min) | `scripts/k6.sh stress-orders.js RATE=60 DURATION=6m` | utilização do HPA sobe muito acima de 60% | `kubectl -n ecommerce get hpa orders-api -w` (`TARGETS`) |
+| HPA escala | — (automático) | `REPLICAS` sobe em degraus até `maxReplicas: 12` | eventos `SuccessfulRescale` (seção 7.1) |
+| Falta capacidade nos nós | — | réplicas novas `Pending` com `Insufficient cpu` | `get pods --field-selector=status.phase=Pending` (seção 7.2) |
+| CA adiciona nó | — | `TriggeredScaleUp`; nó `apps` novo `NotReady` → `Ready` em ≈2–4 min | `kubectl get nodes -l workload=apps -w` (seção 7.3) |
+| Pods agendados | — | os Pending passam a `Running` no nó novo | painel `labs/lab-02/watch.sh` |
+| Fim da carga | k6 termina (≈7,5 min) | após 120 s o HPA reduz até 2; depois o CA remove o nó extra | seção 7.5 |
+
 ## 6. Falha provocada
 
 Uma demanda de CPU maior do que a capacidade de **Pods** e, em seguida, maior do que a capacidade de **nós**:
@@ -108,6 +148,19 @@ kubectl -n ecommerce describe hpa orders-api | sed -n '/Metrics:/,$p'
 - A utilização sobe muito acima de 60% (centenas de %), porque é calculada sobre `requests` (250m), não sobre `limits`.
 - `desiredReplicas` salta em degraus (+100% ou +4 Pods a cada 15 s) até 12.
 - Eventos `SuccessfulRescale` com `New size: N; reason: cpu resource utilization (percentage of request) above target`.
+
+Como o HPA decide (a cada ciclo de avaliação):
+
+```mermaid
+flowchart LR
+    A["uso de CPU por Pod (Metrics Server)"] --> B["utilização = uso ÷ requests.cpu (250m)"]
+    B --> C{"média > 60%?"}
+    C -- sim --> D["desired = ceil(atual × utilização ÷ 60%)"]
+    D --> E["scaleUp: máx(+100%, +4 Pods) a cada 15 s, sem estabilização"]
+    E --> F["limitado a maxReplicas: 12"]
+    C -- não --> G["scaleDown: aguarda 120 s, então −50% a cada 30 s"]
+    G --> H["limitado a minReplicas: 2"]
+```
 
 ### 7.2 Pods Pending e FailedScheduling
 
@@ -131,6 +184,20 @@ kubectl get nodes -l workload=apps -w
 - `Final scale-up plan: [{eks-apps-… 2->3 (max: 5)}]` e evento `TriggeredScaleUp` no Pod Pending.
 - O nó novo aparece `NotReady` e depois `Ready` em **≈2–4 min** (EC2 boot + join + CNI). Durante esse tempo os Pods continuam Pending — **é a janela em que a capacidade não existe**.
 - Em seguida, os Pods Pending são agendados no nó novo.
+
+```mermaid
+flowchart LR
+    P["Pod orders-api Pending (Insufficient cpu)"] --> CA["Cluster Autoscaler simula: o Pod cabe num nó apps novo?"]
+    CA -- "sim, e node group < maxSize 5" --> UP["TriggeredScaleUp: desired 2 → 3"]
+    UP --> EC2["EC2 boot + join + CNI (≈2–4 min)"]
+    EC2 --> R["nó Ready"]
+    R --> S["Scheduler agenda os Pods Pending"]
+    CA -- "não (maxSize atingido)" --> W["Pods seguem Pending: max node group size reached"]
+```
+
+> As APIs têm `topologySpreadConstraints` (`maxSkew: 1` por nó, `DoNotSchedule`): o scheduler mantém as réplicas da
+> Orders equilibradas entre os nós `apps`. Uma réplica pode ficar `Pending` mesmo com CPU livre em outro nó, se ir
+> para lá deixasse a diferença maior que 1. O CA trata isso como qualquer Pod Pending: o nó novo (0 réplicas) a recebe.
 
 ### 7.4 HyperDX / ClickHouse
 
@@ -181,6 +248,16 @@ Após o k6 terminar (≈7,5 min), mantenha o painel aberto:
 1. A CPU cai imediatamente, mas o HPA **espera 120 s** (`scaleDown.stabilizationWindowSeconds`) antes de reduzir, e então remove no máximo 50% das réplicas a cada 30 s até `minReplicas: 2`.
 2. Com Pods removidos, o nó extra fica subutilizado (< 50% de requests). Após `scale-down-unneeded-time=2m` (e `scale-down-delay-after-add=2m` desde o scale-up), o CA drena e remove o nó: logs `Scale-down: removing empty node` / `node … is unneeded`.
 3. O node group volta a 2 nós (`minSize: 2`).
+
+```mermaid
+flowchart LR
+    A["k6 termina"] --> B["CPU cai na hora"]
+    B --> C["HPA: stabilization 120 s"]
+    C --> D["−50% a cada 30 s (12 → 6 → 3 → 2)"]
+    D --> E["nó extra com < 50% de requests"]
+    E --> F["CA: unneeded por 2 min (e ≥ 2 min desde o scale-up)"]
+    F --> G["drena e remove o nó → 2 nós (minSize)"]
+```
 
 ### Achado da validação real: preemption durante o scale-out
 
@@ -240,6 +317,14 @@ Após ~5–8 min sem carga:
 kubectl -n ecommerce get hpa orders-api       # REPLICAS volta a 2
 kubectl get nodes -l workload=apps            # volta a 2 nós
 ```
+
+| Cenário | Comportamento esperado | Como verificar |
+|---|---|---|
+| HPA reagiu à CPU | evento `SuccessfulRescale`, réplicas acima de 2 (até 12) | `verify.sh`: `✔ HPA escalou (SuccessfulRescale)` |
+| Falta de capacidade | Pods `Pending` com `FailedScheduling: … Insufficient cpu` | `.workshop/lab-02-evidence.txt`, seção "Eventos FailedScheduling / TriggeredScaleUp" |
+| CA adicionou nó | `TriggeredScaleUp` / `Final scale-up plan`; nó `apps` novo com `CREATED` durante o teste | `verify.sh`: `✔ Cluster Autoscaler disparou scale-up`; seção "Nós" do arquivo |
+| Inventory não foi preemptada | nenhum evento `Preempted` para `inventory-api` | `kubectl get events -A --field-selector reason=Preempted` |
+| Recuperação | réplicas voltam a 2 e o node group a 2 nós, ~5–8 min após a carga | `kubectl -n ecommerce get hpa orders-api`; `kubectl get nodes -l workload=apps` |
 
 ## 11. Challenge
 

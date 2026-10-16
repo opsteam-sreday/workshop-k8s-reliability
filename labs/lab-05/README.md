@@ -16,6 +16,18 @@ As três APIs expõem **três** health checks com papéis diferentes:
 | **readiness** | `/health/ready` | esta réplica pode receber tráfego agora? | **tira o Pod do Service** (2 falhas × 5 s), sem reiniciar |
 | **liveness** | `/health/live` | o processo está respondendo? | **reinicia o container** (3 falhas × 10 s, timeout de 3 s) |
 
+```mermaid
+flowchart LR
+    K["kubelet<br/>(a cada período)"] --> S{"startup<br/>/health/startup<br/>a cada 2 s"}
+    S -- "503 por 60 × 2 s = 120 s" --> R1["reinicia o container"]
+    S -- "200 (started=true)" --> P["liberadas as probes<br/>readiness e liveness"]
+    P --> RD{"readiness<br/>/health/ready<br/>a cada 5 s"}
+    P --> LV{"liveness<br/>/health/live<br/>a cada 10 s"}
+    RD -- "2 falhas" --> EP["Pod sai do EndpointSlice<br/>(sem tráfego, sem restart)"]
+    RD -- "1 sucesso" --> IN["Pod volta a receber tráfego"]
+    LV -- "3 falhas (timeout 3 s)" --> R2["reinicia o container"]
+```
+
 Neste lab você faz cada probe falhar **de propósito**, em uma réplica, e observa o que o Kubernetes faz com o
 tráfego e com o container. Para isso, a API admin (só `127.0.0.1`, via `kubectl exec`) tem duas falhas:
 
@@ -98,6 +110,26 @@ Execute as partes **na ordem** (A1 → A2 → B → C → D), no terminal 4.
 
 ### Parte A1 — readiness falha, liveness OK
 
+```mermaid
+sequenceDiagram
+    participant Op as Você (fault.sh)
+    participant Pod as Pod-alvo (Orders)
+    participant K as kubelet
+    participant ES as EndpointSlice
+    participant BFF
+    Op->>Pod: PUT /admin/health {"ready": false}
+    loop a cada 5 s
+        K->>Pod: GET /health/ready
+        Pod-->>K: 503 (forced_not_ready)
+        K->>Pod: GET /health/live
+        Pod-->>K: 200
+    end
+    K->>ES: 2 falhas: ready=false
+    BFF->>ES: quem recebe tráfego?
+    ES-->>BFF: só a outra réplica
+    Note over Pod: continua rodando, RESTARTS=0
+```
+
 ```bash
 export T0=$(date -u +%FT%TZ)
 scripts/fault.sh orders not-ready $POD
@@ -111,6 +143,18 @@ scripts/fault.sh orders ready $POD     # desfaz; observe o terminal 1 por mais 1
 ```
 
 ### Parte A2 — processo travado
+
+```mermaid
+timeline
+    title freeze 90 na réplica que atende (valores medidos)
+    t=0 s : fault.sh freeze 90 : event loop bloqueado (time.sleep)
+    ~8 s : 1ª falha de liveness (timeout, não 503)
+    ~14 s : readiness falhou 2x : Pod sai do EndpointSlice : 504 param de aparecer na BFF
+    ~36 s : liveness falhou 3x : Killing (SIGTERM)
+    ~36–66 s : SIGTERM não é tratado (loop travado) : kubelet espera terminationGracePeriodSeconds 30 s : SIGKILL
+    ~66 s : Started : RESTARTS=1
+    ~73 s : startup e readiness OK : Pod volta ao EndpointSlice
+```
 
 Agora mire a réplica que **está atendendo** (a outra). Na A1 o cliente HTTP da BFF moveu suas conexões
 keep-alive para ela, então travá-la mostra o impacto real em quem chama:
@@ -127,6 +171,22 @@ Observe por **~90 s** (até o Pod voltar a `READY=true`). Depois: `labs/lab-05/c
 
 ### Parte B — rollout sob carga (graceful shutdown)
 
+```mermaid
+sequenceDiagram
+    participant D as Deployment
+    participant N as Pod novo
+    participant O as Pod antigo
+    participant ES as EndpointSlice
+    D->>N: cria (maxSurge 1)
+    N->>ES: startup + readiness OK → entra
+    D->>O: encerra (maxUnavailable 0: só depois do novo estar pronto)
+    Note over O: SIGTERM → shutting_down=true
+    O-->>ES: readiness 503 → sai
+    Note over O: espera SHUTDOWN_DELAY_SECONDS = 5 s (ainda atendendo)
+    Note over O: uvicorn: até 20 s para terminar as requisições em andamento
+    O->>O: exit (bem antes do limite de 30 s)
+```
+
 ```bash
 export T0=$(date -u +%FT%TZ)
 OLD=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api -o jsonpath='{.items[0].metadata.name}')
@@ -138,6 +198,17 @@ labs/lab-05/count-responses.sh "$T0"
 ```
 
 ### Parte C — deploy quebrado (startup)
+
+```mermaid
+flowchart TB
+    A["set env ORDERS_TABLE_NAME=tabela-que-nao-existe"] --> B["Deployment cria 1 Pod novo (maxSurge 1)"]
+    B --> C["warm-up: GetItem → AccessDeniedException"]
+    C --> D["/health/startup 503 + last_error<br/>/health/live 200<br/>/health/ready 503"]
+    D -- "~120 s (60 × 2 s)" --> E["Killing: failed startup probe → restart → CrashLoopBackOff"]
+    B -. "maxUnavailable 0" .-> F["2 Pods antigos seguem 1/1<br/>e atendem 100% do tráfego"]
+    E --> G["rollout status trava: rollout não avança"]
+    G --> H["rollout undo"]
+```
 
 Uma configuração errada: a Orders aponta para uma tabela que não existe (e que o Pod Identity dela não pode ler).
 
@@ -164,6 +235,17 @@ labs/lab-05/count-responses.sh "$T0"
 ```
 
 ### Parte D — dependência fora do ar (anti-cascata)
+
+```mermaid
+flowchart LR
+    C["k6 / cliente"] --> BFF --> O["Orders (2 réplicas, Ready)"]
+    O -- "POST /inventory/reservations" --> I["Inventory: http-503"]
+    I -- "503" --> O
+    O --> CB["Circuit Breaker<br/>5 falhas → OPEN"]
+    CB --> R["503 DEPENDENCY_UNAVAILABLE<br/>+ Retry-After"]
+    R --> BFF --> C
+    O -. "readiness NÃO consulta a Inventory" .-> OK["Orders continua no EndpointSlice"]
+```
 
 ```bash
 export T0=$(date -u +%FT%TZ)
@@ -230,7 +312,29 @@ sleep 20; kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api -o 
 kubectl -n ecommerce patch hpa orders-api -p '{"spec":{"minReplicas":2}}'      # volta a 2 (aguarde ~1 min)
 ```
 
+```mermaid
+flowchart LR
+    subgraph A["nó A (ballast: 100m livres)"]
+        A1["orders #1"]
+    end
+    subgraph B["nó B (~740m livres)"]
+        B1["orders #2"]
+        B2["orders #3"]
+    end
+    P["orders #4<br/>Pending"] -. "Insufficient cpu" .-> A
+    P -. "3 × 1 violaria maxSkew 1" .-> B
+```
+
+Sem o ballast, o nó A volta a ter CPU e a réplica #4 sobe nele: **2 × 2**.
+
 **E3 — drain de um nó e o que acontece depois.**
+
+```mermaid
+flowchart LR
+    S0["1 × 1<br/>(BFF e Orders)"] -- "drain nó A<br/>0 erros" --> S1["tudo no nó B<br/>(nó A: SchedulingDisabled,<br/>fora da conta por nodeTaintsPolicy: Honor)"]
+    S1 -- "uncordon nó A" --> S2["60 s depois: ainda tudo no nó B<br/>(spread não move Pods)"]
+    S2 -- "rollout restart<br/>0 erros" --> S3["1 × 1 de novo"]
+```
 
 ```bash
 export T0=$(date -u +%FT%TZ)
@@ -400,6 +504,18 @@ scripts/fault.sh orders cb               # CLOSED (após ~15 s sem falhas)
 kubectl get nodes -l workload=apps       # nenhum SchedulingDisabled
 kubectl -n ecommerce get pods -l 'app.kubernetes.io/name in (bff-api,orders-api)' -o wide   # 1 réplica por nó
 ```
+
+Resumo dos cenários (valores medidos no `rw-0001`, 10 pedidos/s):
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| A1 — readiness falha | `fault.sh orders not-ready $POD` | ~10 s: fora do tráfego; 2 min sem restart; volta ~5 s após `ready` | `watch-pod.sh`: `READY=false RESTARTS=0 recebe-tráfego=não`; BFF 0 erros |
+| A2 — processo travado | `fault.sh orders freeze 90 $POD` | ~14 s fora do tráfego; ~36 s `Killing` (liveness); ~66 s `Started`; ~73 s pronto | eventos `Liveness probe failed ... context deadline exceeded`, `RESTARTS=1`; BFF poucos `504`/`409` (6 e 2 de 1168) |
+| B — rollout | `rollout restart deploy/orders-api` | Pod antigo sai do Service antes de parar; novo pronto antes do antigo sair | log `SIGTERM recebido: readiness=false, aguardando 5.0s`; BFF 0 erros |
+| C — deploy quebrado | `set env ORDERS_TABLE_NAME=tabela-que-nao-existe` | Pod novo nunca `1/1`; restart ~120 s; rollout travado; antigos atendem | `/health/startup` 503 com `AccessDeniedException`; `rollout status` timeout; BFF 0 erros |
+| D — Inventory fora | `fault.sh inventory http-503` | Orders segue `1/1`, CB `OPEN`/`HALF_OPEN`, erro de negócio | `fault.sh orders cb`; BFF `503` (919 de 956) |
+| E2 — skew rígido | ballast no nó A + `minReplicas: 4` | réplica #4 `Pending` com ~740m livres no nó B; sobe no nó A sem ballast | evento `didn't match pod topology spread constraints` |
+| E3 — drain e volta | `drain` → `uncordon` → `rollout restart` | tudo no nó B; nada rebalanceia após `uncordon`; restart redistribui | `get pods -o wide`; BFF 0 erros (513 e 282) |
 
 ## 11. Challenge
 

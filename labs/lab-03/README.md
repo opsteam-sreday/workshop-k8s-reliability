@@ -18,6 +18,22 @@ ver o que acontece com essa dependência quando:
 - o **nó** fica sob pressão de CPU/memória (domínio do **QoS**);
 - o **scheduler** fica sem capacidade para agendar Pods críticos (domínio da **PriorityClass/preemption**).
 
+```mermaid
+flowchart LR
+    subgraph NODE["Pressão no NÓ → kubelet / kernel (QoS: requests/limits)"]
+        direction TB
+        C1["Uso de CPU acima do limit"] --> T1["CPU throttling (CFS cpu.max)<br/>Pod continua vivo, fica lento"]
+        M1["Memória do container atinge o limit"] --> O1["OOMKilled (kernel)<br/>container reinicia, estado em memória perdido"]
+        N1["Nó sem memória (memory.available baixo)"] --> E1["Eviction (kubelet)<br/>BestEffort primeiro, depois Burstable acima do request"]
+    end
+    subgraph SCHED["Falta de capacidade de AGENDAMENTO → kube-scheduler (PriorityClass)"]
+        direction TB
+        P1["Pod novo não cabe em nenhum nó"] --> P2{"Existe Pod de prioridade<br/>ESTRITAMENTE menor que libere o suficiente?"}
+        P2 -- sim --> P3["Preemption: vítima removida<br/>(QoS não entra na conta)"]
+        P2 -- não --> P4["Pod fica Pending<br/>(Cluster Autoscaler, se ligado, cria nó)"]
+    end
+```
+
 ## 2. Hipótese
 
 1. Requests/limits determinam a `QoSClass` (`BestEffort`, `Burstable`, `Guaranteed`), e cada classe sofre de forma
@@ -69,9 +85,43 @@ labs/lab-03/qos.sh burstable      # requests 100m/128Mi, limits 500m/512Mi -> Bu
 labs/lab-03/qos.sh guaranteed     # requests == limits 500m/512Mi          -> Guaranteed
 ```
 
+```mermaid
+flowchart TD
+    R["resources do container"] --> Q1{"Algum request ou limit?"}
+    Q1 -- "não ({})" --> BE["BestEffort<br/>(perfil besteffort)"]
+    Q1 -- sim --> Q2{"requests == limits<br/>para CPU e memória?"}
+    Q2 -- "sim (500m/512Mi = 500m/512Mi)" --> G["Guaranteed<br/>(perfil guaranteed)"]
+    Q2 -- "não (100m/128Mi → 500m/512Mi)" --> BU["Burstable<br/>(perfil burstable, padrão da Inventory)"]
+```
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Sem resources | `qos.sh besteffort` | Pod recriado (`Recreate`) como `BestEffort`; estoque em memória reiniciado | `kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api -o jsonpath='{.items[0].status.qosClass}'` |
+| Request < limit | `qos.sh burstable` | `Burstable` (100m/128Mi → 500m/512Mi) | idem |
+| Request = limit | `qos.sh guaranteed` | `Guaranteed` (500m/512Mi) | idem |
+
 Os perfis estão em `kubernetes/labs/qos/inventory-*.patch.json` (JSON patch sobre `containers[0].resources`).
 A Inventory API usa `strategy: Recreate` (réplica única com estado em memória), então cada troca de perfil
 **recria o Pod** — e reinicia o estoque/reservas em memória.
+
+Os dois experimentos seguintes batem no **limit** do container, mas o resultado é oposto porque CPU é comprimível
+e memória não:
+
+```mermaid
+flowchart LR
+    subgraph CPU["A.2 — cpu-burn 2 (~2 cores) contra limit 500m"]
+        direction TB
+        a1["Processo pede mais CPU"] --> a2["CFS: cota cpu.max 50000/100000 esgotada"]
+        a2 --> a3["Processo pausado até o próximo período de 100 ms"]
+        a3 --> a4["nr_throttled ↑ · latência ↑ · RESTARTS igual"]
+    end
+    subgraph MEM["A.3 — memory 700 contra limit 512Mi"]
+        direction TB
+        b1["Ballast cresce 16 MiB / 250 ms"] --> b2["cgroup atinge memory.max (512Mi)"]
+        b2 --> b3["Kernel mata o processo (OOM killer)"]
+        b3 --> b4["OOMKilled · RESTARTS +1 · estoque/reservas zerados"]
+    end
+```
 
 #### A.2 CPU throttling (perfil com limit de CPU)
 
@@ -158,6 +208,14 @@ com o vizinho em desvantagem. Observe a latência p95 e os spans de `inventory-a
 kubectl -n loadtest delete pod noisy-neighbor
 ```
 
+**Resumo da Parte A**
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| CPU acima do limit | `qos.sh burstable` + `fault.sh inventory cpu-burn 2` | Throttling em quase todo período; Pod **não** reinicia; p95 dos pedidos sobe | `labs/lab-03/cpu-stat.sh` (`nr_throttled` ≈ `nr_periods`); `container.cpu.throttled_time` no HyperDX; `RESTARTS` igual |
+| Memória acima do limit | `qos.sh burstable` + `fault.sh inventory memory 700` | `OOMKilled` em ~10 s; container reinicia sem a falha; estoque e reservas voltam ao inicial | `lastState.terminated.reason` = `OOMKilled`; `RESTARTS +1`; `fault.sh inventory state` (`reservations_total` = 0) |
+| BestEffort + vizinho barulhento | `qos.sh besteffort` + `noisy-neighbor.yaml` | Inventory disputa CPU com peso mínimo; latência maior, sem restart | `kubectl top pods -A --sort-by=cpu`; p95 do k6; spans `inventory-api` |
+
 ### Parte B — PriorityClass & Preemption (sequência determinística)
 
 ```bash
@@ -199,6 +257,35 @@ kubectl get events -n ecommerce --sort-by=.lastTimestamp -w | grep -E "Preempted
 kubectl -n ecommerce get pods -o wide -w
 labs/lab-04/watch-cb.sh        # estado do Circuit Breaker por réplica da Orders
 ```
+
+Sequência esperada da Parte B (2 nós `apps`, CA desligado, ballasts deixando 100m livres por nó):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as kubectl scale (+2)
+    participant S as kube-scheduler
+    participant NA as Nó A (Inventory low-priority, Guaranteed 500m)
+    participant NB as Nó B (só ballasts critical-services)
+    participant O as Orders API
+    U->>S: 2 novos Pods orders-api (critical-services 1000, request 250m)
+    S-->>S: Pending — "Insufficient cpu" (100m livres por nó)
+    S->>NA: Preemption: remove a Inventory (prioridade 100 < 1000)
+    NA-->>S: libera 500m → Orders #3 agendada no nó A
+    S-->>S: Inventory recriada pelo ReplicaSet fica Pending (não pode preemptar ninguém)
+    S-->>S: Orders #4 Pending — nó A violaria maxSkew 1, nó B sem vítimas
+    O->>O: pré-consulta/reserva sem endpoints → retries → Circuit Breaker OPEN
+    O-->>U: POST /orders → 503 DEPENDENCY_UNAVAILABLE (reason=circuit_open)
+```
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Dependência com prioridade baixa | B.2 + B.4 (Guaranteed 500m + `low-priority-services`) | Inventory `Running`, `PRIORITY` 100, `QOS` Guaranteed | `kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,QOS:.status.qosClass,PRIORITY:.spec.priorityClassName` |
+| Cluster sem folga | B.3 (CA = 0) + B.5 (`fill-capacity.py --slack 100`) | Ballasts `Running` nos 2 nós `apps`; ~100m livres por nó | `kubectl -n loadtest get pods -l app.kubernetes.io/name=capacity-ballast -o wide` |
+| Orders +2 réplicas | B.6 | Evento `Preempted` na Inventory; uma Orders nova agendada no nó dela | `kubectl get events -n ecommerce --field-selector reason=Preempted` |
+| Vítima não reagenda | — | Inventory nova `Pending` (`Insufficient cpu`; nenhuma vítima de prioridade menor) | `kubectl -n ecommerce get pods -l app.kubernetes.io/name=inventory-api` |
+| Spread impede empilhar | — | 4ª Orders `Pending`: *"didn't match pod topology spread constraints … Preemption is not helpful"* | `kubectl -n ecommerce describe pod <orders Pending>` |
+| Impacto no negócio | k6 em T3 | `POST /orders` `201` → ~0%; `503 DEPENDENCY_UNAVAILABLE`; CB `OPEN` em cada réplica | saída do k6; `labs/lab-04/watch-cb.sh`; `circuit_breaker.state` = 2 no HyperDX |
 
 ## 6. Falha provocada
 
@@ -299,6 +386,20 @@ for crítica), limit de memória dimensionado pelo uso real + margem, e **não**
 produção (fase 2: estado compartilhado/durável).
 
 ## 10. Validação
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Prioridade corrigida | patch `inventory-restore-priority` (seção 9) | Inventory nova com prioridade 1000 fica `Pending` (não preempta prioridade igual) | `kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api -o wide` |
+| Capacidade restaurada | CA = 1 (seção 9) | CA adiciona um nó `apps` em 2–4 min; Inventory `Running` | `kubectl get nodes -l workload=apps -w`; logs do CA (`scale-up`) |
+| Recuperação do fluxo | — | CB `HALF_OPEN` → `CLOSED` em todas as réplicas; pedidos voltam a `201` | `scripts/fault.sh orders cb`; k6 com `http_req_failed < 5%` |
+| Evidência da preempção | — | Evento `Preempted` da Inventory registrado | `kubectl get events -n ecommerce --field-selector reason=Preempted` |
+
+```mermaid
+flowchart LR
+    F1["Inventory → critical-services (1000)"] --> F2["Pod novo Pending<br/>(não preempta prioridade igual)"]
+    F2 --> F3["Cluster Autoscaler (replicas=1)<br/>cria nó apps em 2–4 min"]
+    F3 --> F4["Inventory Running"] --> F5["CB HALF_OPEN → CLOSED"] --> F6["POST /orders 201"]
+```
 
 ```bash
 kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api \

@@ -16,6 +16,38 @@ A Orders API protege a chamada à Inventory com: **timeout** (500 ms), **retry**
 (máx. 2), **orçamento total** por chamada (2000 ms), **bulkhead** (10 chamadas simultâneas por réplica) e um
 **Circuit Breaker** local por réplica (`CLOSED` → `OPEN` → `HALF_OPEN` → `CLOSED`).
 
+Caminho de cada chamada da Orders à Inventory (`apps/orders-api/app/inventory_client.py`):
+
+```mermaid
+flowchart TD
+    C["Cliente / k6"] -->|POST /orders| BFF["BFF (sem retry de POST)"]
+    BFF --> O["Orders API"]
+    O --> B{"Bulkhead: vaga em até 100 ms? (10 por réplica)"}
+    B -- não --> BF["falha imediata: reason=bulkhead_full (não conta no CB)"]
+    B -- sim --> CB{"Circuit Breaker"}
+    CB -- OPEN --> FF["fail fast: reason=circuit_open (sem rede)"]
+    CB -- "CLOSED / HALF_OPEN" --> T["Tentativa: timeout 500 ms (limitado ao orçamento restante)"]
+    T --> I["Inventory API"]
+    I -- "2xx / 409 / 422" --> OK["sucesso para o CB (zera falhas consecutivas)"]
+    I -- "timeout, erro de transporte, 500/502/503/504" --> F["falha para o CB"]
+    F --> R{"Retry? máx. 2 retries (3 tentativas) e cabe no orçamento de 2000 ms"}
+    R -- sim --> J["backoff uniform(0, min(400, 50 × 2^(n-1))) ms"] --> B
+    R -- não --> E["Orders responde 503 DEPENDENCY_UNAVAILABLE + Retry-After"]
+```
+
+Estados do Circuit Breaker (por réplica; `apps/orders-api/app/circuit_breaker.py`, ConfigMap `orders-config`):
+
+```mermaid
+stateDiagram-v2
+    [*] --> CLOSED
+    CLOSED --> CLOSED: sucesso (zera o contador)
+    CLOSED --> OPEN: 5 falhas consecutivas (CB_FAILURE_THRESHOLD)
+    OPEN --> OPEN: chamada rejeitada (fail fast)
+    OPEN --> HALF_OPEN: 15 s depois (CB_RECOVERY_TIMEOUT_SECONDS), na próxima chamada
+    HALF_OPEN --> CLOSED: 2 chamadas de teste com sucesso (CB_HALF_OPEN_MAX_CALLS)
+    HALF_OPEN --> OPEN: qualquer falha (novo recovery timeout)
+```
+
 ## 2. Hipótese
 
 1. Com latência > timeout, cada réplica da Orders acumula falhas consecutivas e abre o circuito após **5** falhas.
@@ -82,6 +114,23 @@ retorno a `OPEN` (as chamadas de teste ainda estouram o timeout). Sequência reg
 > reabre. Um único breaker por dependência mistura operações com perfis de falha diferentes — discuta
 > breakers por operação no Challenge.
 
+Fluxo esperado com `latency 800` (cada tentativa estoura os 500 ms):
+
+```mermaid
+sequenceDiagram
+    participant O as Orders (1 réplica)
+    participant I as Inventory (+800 ms)
+    O->>I: tentativa 1
+    Note over O: timeout 500 ms → falha consecutiva +1
+    O->>I: tentativa 2 (após backoff com jitter)
+    Note over O: timeout → +1
+    O->>I: tentativa 3
+    Note over O: timeout → +1 · pedido: 503 reason=timeout (~1,5–2 s)
+    Note over O: no 2º pedido o contador chega a 5 → OPEN
+    O--xI: pedidos seguintes: fail fast (circuit_open), em ms
+    Note over O: +15 s → HALF_OPEN: 2 chamadas de teste estouram → OPEN de novo
+```
+
 ### 5.2 Recuperação
 
 ```bash
@@ -97,6 +146,9 @@ scripts/fault.sh inventory http-503          # alvo ALL: precheck e reservas
 # ... observe OPEN / fail fast ...
 scripts/fault.sh inventory reset
 ```
+
+Com 503 o fluxo é o mesmo da 5.1, mas **sem esperar timeout**: cada tentativa falha na hora, então o circuito abre
+mais rápido e o pedido falha em poucos ms já antes do `OPEN`.
 
 ### 5.4 Bulkhead (limite de concorrência)
 
@@ -142,6 +194,41 @@ scripts/fault.sh inventory state
 
 > O registro de idempotência pode ser lido por qualquer réplica (está no DynamoDB); o laço acima só pega a primeira
 > que responder.
+
+Fluxo do caso 5.5 (o efeito acontece, a resposta não chega a tempo):
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente ($BFF)
+    participant O as Orders
+    participant D as DynamoDB
+    participant I as Inventory (slow-after-commit 800 ms)
+    C->>O: POST /orders (Idempotency-Key K)
+    O->>D: registro IDEMP K = IN_PROGRESS (lease)
+    O->>I: reserva res-{order_id} (fencing token v)
+    Note over I: reserva APLICADA, resposta atrasa 800 ms
+    Note over O: timeout de leitura → maybe_applied (sem compensar)
+    O->>D: reservation_state=UNKNOWN, libera o lease
+    O-->>C: 503 DEPENDENCY_UNAVAILABLE reason=timeout
+    Note over C,I: fault reset · cliente repete com a MESMA chave K
+    C->>O: POST /orders (Idempotency-Key K)
+    O->>I: mesma reserva res-{order_id}, fencing token maior
+    I-->>O: 200 outcome=REPLAYED (estoque NÃO decrementa de novo)
+    O->>D: pedido CONFIRMED, registro COMPLETED
+    O-->>C: 201
+```
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| 5.1 Latência > timeout | `fault.sh inventory latency 800` | cada réplica abre o CB após 5 falhas consecutivas; pedidos passam de ~1,5–2 s a falha rápida | T2 `OPEN`; k6 `http_req_duration` cai; logs `Circuit breaker transition` |
+| 5.1 Recovery com falha ativa | aguardar ~15 s | `OPEN → HALF_OPEN → OPEN` (testes estouram o timeout) | T2; logs `HALF_OPEN -> OPEN` |
+| 5.1 variação | `latency 800 RESERVATIONS` | CB **oscila**: testes do precheck fecham, reserva reabre | T2 alternando `CLOSED`/`OPEN` |
+| 5.2 Recuperação | `fault.sh inventory reset` | em até ~15 s: `HALF_OPEN`, 2 testes OK, `CLOSED` | T2 `CLOSED`, `consecutive_failures: 0` |
+| 5.3 HTTP 503 | `fault.sh inventory http-503` | falhas imediatas, CB abre mais rápido que na 5.1; `503 reason=circuit_open` | T2 `OPEN`; `orders.failed` por `reason` |
+| 5.4 Bulkhead | `latency 400 RESERVATIONS` + `stress-orders.js RATE=60` | acima de ~25 reservas/s por réplica: falha em 100 ms com `bulkhead_full`, **sem** abrir o CB | `inventory.bulkhead.rejected`; `orders.failed{reason=inventory_bulkhead_full}`; CB segue `CLOSED` |
+| 5.4 limite da Inventory | mesma carga | `503 TOO_MANY_CONCURRENT_REQUESTS` da Inventory **conta** como falha | logs da Inventory; CB pode abrir |
+| 5.5 Resultado desconhecido | `slow-after-commit 800` + `curl` | `503 reason=timeout`; registro `IN_PROGRESS` / `reservation_state=UNKNOWN`; reserva aplicada | admin `/admin/idempotency/…`; `fault.sh inventory state` (`reservations_total +1`) |
+| 5.5 Retry com a mesma chave | `fault.sh inventory reset` + mesmo `curl` | `201`, pedido `CONFIRMED`, reserva `REPLAYED`; estoque decrementado **uma vez** | `fault.sh inventory state` sem novo decremento |
 
 ## 6. Falha provocada
 
@@ -259,6 +346,14 @@ e mensagens de degradação para o cliente (DEGRADED mode é fase 2).
 scripts/fault.sh orders cb                     # todas as réplicas "state": "CLOSED", "consecutive_failures": 0
 scripts/k6.sh create-orders.js RATE=5 DURATION=1m   # thresholds OK
 ```
+
+| Verificação | Comando / onde | Esperado |
+|---|---|---|
+| CB fechado em todas as réplicas | `scripts/fault.sh orders cb` | `"state": "CLOSED"`, `"consecutive_failures": 0` |
+| Tráfego normal | `scripts/k6.sh create-orders.js RATE=5 DURATION=1m` | thresholds OK (`http_req_failed < 5%`) |
+| Ciclo completo do CB | HyperDX Logs `Body:"Circuit breaker transition"` | `CLOSED→OPEN`, `OPEN→HALF_OPEN`, (`HALF_OPEN→OPEN`…), `HALF_OPEN→CLOSED` |
+| Fail fast | spans `Inventory reserve` | `circuit_breaker.rejected=true`, evento `circuit_breaker.open` |
+| Sem falhas injetadas | `scripts/fault.sh inventory status` | `"fault_mode": "NONE"` |
 
 No HyperDX, a sequência de logs `Circuit breaker transition` de uma réplica deve mostrar
 `CLOSED→OPEN`, `OPEN→HALF_OPEN`, (`HALF_OPEN→OPEN`, `OPEN→HALF_OPEN` enquanto a falha persistiu) e `HALF_OPEN→CLOSED`.

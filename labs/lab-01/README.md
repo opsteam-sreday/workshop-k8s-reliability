@@ -16,6 +16,30 @@ cliente ──► BFF API ──► Orders API ──► Inventory API (reserva 
                             └──► DynamoDB (pedido + registro de idempotência)
 ```
 
+Fluxo completo de um `POST /orders` (o que este lab exercita passo a passo):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente (curl / k6)
+    participant N as NLB bff-api-public
+    participant B as BFF API
+    participant O as Orders API
+    participant D as DynamoDB
+    participant I as Inventory API
+    C->>N: POST /orders + Idempotency-Key
+    N->>B: porta 80 para 8080
+    B->>B: valida Idempotency-Key (UUID) e payload
+    B->>O: POST /orders (mesma chave, X-Request-ID)
+    O->>D: PutItem IDEMP#customer#key (attribute_not_exists) = IN_PROGRESS
+    O->>I: GET /inventory/sku (pré-consulta)
+    O->>I: POST /inventory/reservations (reservation_id = res-order_id)
+    O->>D: UpdateItem reservation_state = RESERVED
+    O->>D: TransactWriteItems ORDER# + IDEMP# COMPLETED (atômico)
+    O-->>B: 201 + Idempotency-Replayed false
+    B-->>C: 201 (mesmo corpo)
+```
+
 E precisamos provar que ele funciona **mesmo quando o cliente repete a requisição** — porque, em produção, clientes, gateways e SDKs repetem requisições o tempo todo (timeouts, reconexões, usuários impacientes clicando duas vezes).
 
 ## 2. Hipótese
@@ -72,6 +96,21 @@ curl -s -o /dev/null -w '%{http_code}\n' $BFF/health/ready   # 200
 
 ## 5. Comandos executáveis
 
+Resumo dos cenários desta seção:
+
+| Passo | Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|---|
+| 5.1 | Primeiro pedido | `POST /orders` com chave nova | `201`, `Idempotency-Replayed: false`, `status: CONFIRMED`, `Location: /orders/ord-…` | saída do `curl -i` |
+| 5.2 | Retry com a mesma chave | repetir o mesmo `POST` | `201`, `Idempotency-Replayed: true`, mesmo `order_id`/`created_at`/corpo | `grep` nos headers e `order_id` |
+| 5.3 | Mesma chave, payload diferente | `quantity` 2 → 5 | `409 IDEMPOTENCY_KEY_REUSED` | corpo da resposta |
+| 5.4 | Chave inválida ou ausente | `Idempotency-Key: abc` / sem header | `400 INVALID_IDEMPOTENCY_KEY` (a BFF rejeita, a Orders nem é chamada) | corpo da resposta |
+| 5.5 | Consultas | `GET /orders/{id}` e `GET /orders?customer_id=` | o pedido aparece; listagem via `Query` no `GSI1` com `next_token` | `jq` |
+| 5.6 | Persistência | `get-item` no DynamoDB | `ORDER#…` e `IDEMP#…` (`COMPLETED`, `version=1`, `attempts=1`, `response_status=201`, `expires_at` ≈ +86400 s) | `aws dynamodb get-item` |
+| 5.7 | Reserva única | estado da Inventory | os retries não criaram reservas extras | `scripts/fault.sh inventory state` |
+| 5.8 | Isolamento IAM | `validate-iam.sh` | só a `orders-api-sa` acessa o DynamoDB, e só o necessário | 0 FAIL no script |
+| 5.9 | Trace distribuído | busca no HyperDX | mesmo `TraceId` em BFF → Orders → Inventory + DynamoDB | árvore do trace |
+| 5.10 | Concorrência | 20 VUs com a **mesma** chave | 1 pedido; os concorrentes recebem `409 ORDER_IN_PROGRESS` | resumo do k6 |
+
 ### 5.1 Primeiro pedido
 
 ```bash
@@ -113,6 +152,19 @@ curl -s -i -X POST $BFF/orders -H "Content-Type: application/json" \
 
 Esperado: `201`, `Idempotency-Replayed: true` e o **mesmo** `order_id`, `created_at` e corpo da primeira resposta.
 
+```mermaid
+sequenceDiagram
+    participant C as Cliente
+    participant O as Orders API (via BFF)
+    participant D as DynamoDB
+    participant I as Inventory API
+    C->>O: POST /orders (mesma chave, mesmo payload)
+    O->>D: PutItem IDEMP# condicional falha (já existe)
+    O->>D: lê o registro: status COMPLETED, request_hash igual
+    Note over O,I: nenhuma chamada nova à Inventory, nenhuma escrita de pedido
+    O-->>C: 201 com a resposta armazenada + Idempotency-Replayed true
+```
+
 ### 5.3 Mesma chave, payload diferente → 409
 
 ```bash
@@ -122,6 +174,18 @@ curl -s -i -X POST $BFF/orders -H "Content-Type: application/json" \
 ```
 
 Esperado: `409` com `{"error":"IDEMPOTENCY_KEY_REUSED",…}`.
+
+```mermaid
+flowchart LR
+    A["POST com chave já usada"] --> B{"request_hash igual ao registrado?"}
+    B -- não --> C["409 IDEMPOTENCY_KEY_REUSED"]
+    B -- sim --> D{"status do registro"}
+    D -- COMPLETED --> E["201 replay (Idempotency-Replayed true)"]
+    D -- "IN_PROGRESS e lease válido" --> F["409 ORDER_IN_PROGRESS + Retry-After"]
+    D -- "IN_PROGRESS e lease expirado" --> G["takeover (version+1) e reexecuta"]
+```
+
+> A comparação do hash vem **antes** do replay: mesmo com o pedido já `COMPLETED`, um payload diferente com a mesma chave recebe `409`.
 
 > A comparação usa o **hash SHA-256 do payload canônico** (itens ordenados por SKU, preços normalizados para 2 casas, `currency` default `BRL`). Teste: inverter a ordem dos itens ou enviar `"unit_price": 49.9` (número) **não** gera conflito — é a mesma intenção.
 
@@ -241,6 +305,31 @@ scripts/k6.sh idempotency-concurrency.js
 
 20 VUs enviam simultaneamente a **mesma** chave. Esperado: checks 100%, `idempotency_violations: 0`, `idempotency_in_progress` ≈ 19, e no teardown `pedidos persistidos=1` + replay final `201` com `Idempotency-Replayed=true`.
 
+```mermaid
+sequenceDiagram
+    participant V1 as VU 1
+    participant Vn as VUs 2..20
+    participant O as Orders API
+    participant D as DynamoDB
+    par mesma Idempotency-Key ao mesmo tempo
+        V1->>O: POST /orders
+        Vn->>O: POST /orders
+    end
+    O->>D: PutItem condicional (VU 1 vence: IN_PROGRESS + lease)
+    O->>D: PutItem condicional (demais falham: registro já existe)
+    O-->>Vn: 409 ORDER_IN_PROGRESS + Retry-After (lease ainda válido)
+    O->>D: VU 1 conclui: TransactWriteItems (pedido + COMPLETED)
+    O-->>V1: 201
+    Note over Vn,O: no teardown do k6, um novo POST com a chave recebe 201 replay
+```
+
+| Métrica do k6 | Esperado | Significado |
+|---|---|---|
+| `checks` | 100% | toda resposta foi `201` ou `409 ORDER_IN_PROGRESS` |
+| `idempotency_violations` | 0 | nenhum pedido duplicado (threshold `count==0`) |
+| `idempotency_in_progress` | ≈ 19 | concorrentes barrados pelo lease |
+| `pedidos persistidos` (log do teardown) | 1 | um único pedido para a chave |
+
 ---
 
 > ### ✋ Fim do roteiro do LAB 01
@@ -267,6 +356,25 @@ curl -s -i -X POST $BFF/orders -H "Content-Type: application/json" \
 ```
 
 Esperado: `HTTP/1.1 504` com `{"error":"UPSTREAM_TIMEOUT","message":"Orders API não respondeu a tempo. Repita com a MESMA Idempotency-Key.",…}`.
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente
+    participant B as BFF (timeout 300 ms)
+    participant O as Orders API (~700 ms de CPU)
+    participant D as DynamoDB
+    C->>B: POST /orders (KEY2)
+    B->>O: POST /orders
+    Note over B: 300 ms sem resposta
+    B-->>C: 504 UPSTREAM_TIMEOUT
+    O->>D: continua: reserva + TransactWriteItems (COMPLETED)
+    Note over C,D: o cliente viu erro, o pedido existe
+    C->>B: retry com a MESMA KEY2 (seção 9, falhas removidas)
+    B->>O: POST /orders
+    O->>D: registro COMPLETED, mesmo request_hash
+    O-->>B: 201 replay
+    B-->>C: 201 + Idempotency-Replayed true (mesmo order_id)
+```
 
 ## 7. Observações
 
@@ -324,6 +432,13 @@ cat .workshop/validation-report.md
 ```
 
 Esperado: `count = 2` e `validate.sh` sem ❌.
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Um pedido por chave | listar pedidos do `$CUSTOMER` | `count = 2` (um para `KEY`, um para `KEY2`), apesar dos vários POSTs | `curl … \| jq '.count'` |
+| Uma reserva por pedido | estado da Inventory | nenhuma reserva duplicada pelos retries | `scripts/fault.sh inventory state` |
+| Retry após o 504 | `POST` com `KEY2` sem as falhas | `201` + `Idempotency-Replayed: true` com o `order_id` já gravado | seção 9 |
+| Ambiente íntegro | `validate.sh` | nenhum ❌ no relatório | `.workshop/validation-report.md` |
 
 ## 11. Challenge
 
