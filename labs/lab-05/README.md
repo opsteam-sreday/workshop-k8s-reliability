@@ -104,6 +104,14 @@ Os perfis estão em `kubernetes/labs/qos/inventory-*.patch.json` (JSON patch sob
 A Inventory API usa `strategy: Recreate` (réplica única com estado em memória), então cada troca de perfil
 **recria o Pod** — e reinicia o estoque/reservas em memória.
 
+> **💡 O que você deveria ter notado (A.1)**
+>
+> - A `QoSClass` veio só dos `resources`: `{}` → `BestEffort`; request < limit (100m/128Mi → 500m/512Mi) →
+>   `Burstable`; request = limit (500m/512Mi) → `Guaranteed`.
+> - Cada troca de perfil **recriou** o Pod da Inventory (`strategy: Recreate`) e reiniciou o estoque em memória.
+>
+> **Lição:** QoS não é configurada diretamente — é **consequência** de requests e limits.
+
 Os dois experimentos seguintes batem no **limit** do container, mas o resultado é oposto porque CPU é comprimível
 e memória não:
 
@@ -163,6 +171,14 @@ Desligue o stress:
 scripts/fault.sh inventory cpu-burn 0
 ```
 
+> **💡 O que você deveria ter notado (A.2)**
+>
+> - `cpu.max = 50000 100000`: o limit de 500m vira uma cota de 50 ms a cada 100 ms.
+> - `nr_throttled` subiu quase junto com `nr_periods` (na validação do workshop: de 24 para 250 em 20 s).
+> - O Pod **não** reiniciou: `RESTARTS` ficou igual; o efeito foi só a latência maior dos pedidos.
+>
+> **Lição:** estourar o limit de **CPU** deixa o container mais lento (throttling), não o mata.
+
 #### A.3 OOMKilled (limit de memória)
 
 ```bash
@@ -191,6 +207,14 @@ scripts/fault.sh inventory state      # reservations_total volta a 0, estoque vo
 Pedidos já `CONFIRMED` no DynamoDB continuam lá, mas a Inventory "esqueceu" as reservas. Essa é a
 **limitação documentada do MVP** (sem durabilidade das reservas após restart) — não um bug escondido.
 
+> **💡 O que você deveria ter notado (A.3)**
+>
+> - Em ~10 s o `RESTARTS` subiu; `lastState.terminated.reason` = **`OOMKilled`** (exit **137**).
+> - O container voltou com o ballast em 0 (falhas padrão), então não entrou em loop.
+> - `fault.sh inventory state`: `reservations_total` voltou a 0 e o estoque ao inicial — o estado em memória se perdeu.
+>
+> **Lição:** estourar o limit de **memória** mata o container (kernel), e o que estava só em memória vai junto.
+
 #### A.4 BestEffort + vizinho barulhento (contenção)
 
 ```bash
@@ -207,6 +231,14 @@ com o vizinho em desvantagem. Observe a latência p95 e os spans de `inventory-a
 ```bash
 kubectl -n loadtest delete pod noisy-neighbor
 ```
+
+> **💡 O que você deveria ter notado (A.4)**
+>
+> - Sem requests, a Inventory (`BestEffort`) disputou CPU com o vizinho em desvantagem: latência p95 maior e spans de
+>   `inventory-api` mais lentos.
+> - Nenhum restart: contenção de CPU degrada, não derruba.
+>
+> **Lição:** `BestEffort` não tem nenhuma garantia de CPU — é o primeiro a sofrer num nó disputado.
 
 **Resumo da Parte A**
 
@@ -286,6 +318,20 @@ sequenceDiagram
 | Vítima não reagenda | — | Inventory nova `Pending` (`Insufficient cpu`; nenhuma vítima de prioridade menor) | `kubectl -n ecommerce get pods -l app.kubernetes.io/name=inventory-api` |
 | Spread impede empilhar | — | 4ª Orders `Pending`: *"didn't match pod topology spread constraints … Preemption is not helpful"* | `kubectl -n ecommerce describe pod <orders Pending>` |
 | Impacto no negócio | k6 em T3 | `POST /orders` `201` → ~0%; `503 DEPENDENCY_UNAVAILABLE`; CB `OPEN` em cada réplica | saída do k6; `labs/lab-07/watch-cb.sh`; `circuit_breaker.state` = 2 no HyperDX |
+
+> **💡 O que você deveria ter notado (Parte B)**
+>
+> - Evento **`Preempted`** na Inventory (*"Preempted by pod … on node …"*): uma Orders nova ocupou o lugar dela.
+> - A Inventory recriada ficou **`Pending`** (`Insufficient cpu`) e não pôde preemptar ninguém: todo o resto é
+>   `critical-services` ou `system-*`.
+> - A outra Orders nova também ficou `Pending`, pelo topology spread (*"didn't match pod topology spread constraints"*).
+> - Sem Inventory, o Circuit Breaker abriu (**`OPEN`**) em cada réplica e os pedidos viraram
+>   `503 DEPENDENCY_UNAVAILABLE`: `POST /orders 201` caiu para ~0% (na validação do workshop, 82% das requisições
+>   falharam até a correção).
+> - O Pod da Inventory era **`Guaranteed`** e mesmo assim foi removido.
+>
+> **Lição:** QoS protege contra pressão **no nó**; contra falta de capacidade **no scheduler**, quem decide é a
+> PriorityClass — e uma dependência transacional com prioridade baixa derruba todos os pedidos.
 
 ## 6. Falha provocada
 

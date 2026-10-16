@@ -44,13 +44,13 @@ tráfego e com o container. Para isso, a API admin (só `127.0.0.1`, via `kubect
 
 ## 2. Hipótese
 
-1. Com **readiness** falhando e liveness OK, o Pod sai do tráfego em ~10 s e **nunca** é reiniciado.
-2. Com o processo **travado**, o Pod primeiro sai do tráfego (readiness) e, ~30 s depois, é **reiniciado** (liveness).
-3. Um **rollout** sob carga não gera erros: no `SIGTERM` a réplica deixa de ficar pronta e espera 5 s antes de parar.
-4. Um deploy com configuração errada **não derruba o serviço**: o Pod novo nunca fica pronto, o rollout não avança e
-   as réplicas antigas continuam atendendo.
-5. Com a **Inventory fora do ar**, a Orders **continua pronta** (a readiness não verifica dependências): o erro
-   aparece como `503 DEPENDENCY_UNAVAILABLE`, não como Pods `NotReady`.
+| # | Situação | Hipótese | Probe envolvida | Parte |
+|---|---|---|---|---|
+| 1 | Readiness falha, liveness OK | o Pod sai do tráfego em ~10 s e **nunca** é reiniciado | readiness | A1 |
+| 2 | Processo **travado** | o Pod primeiro sai do tráfego e, ~30 s depois, é **reiniciado** | readiness, depois liveness | A2 |
+| 3 | **Rollout** sob carga | nenhum erro: no `SIGTERM` a réplica deixa de ficar pronta e espera 5 s antes de parar | readiness (graceful shutdown) | B |
+| 4 | Deploy com configuração errada | o serviço **não cai**: o Pod novo nunca fica pronto, o rollout não avança e as réplicas antigas seguem atendendo | startup | C |
+| 5 | **Inventory fora do ar** | a Orders **continua pronta** (a readiness não verifica dependências); o erro aparece como `503 DEPENDENCY_UNAVAILABLE`, não como Pods `NotReady` | nenhuma (anti-cascata) | D |
 
 ## 3. Pré-requisitos
 
@@ -137,6 +137,16 @@ labs/lab-02/count-responses.sh "$T0"
 scripts/fault.sh orders ready $POD     # desfaz; observe o terminal 1 por mais 10 s
 ```
 
+> **💡 O que você deveria ter notado (A1)**
+>
+> - Em **~10 s** o Pod foi para `READY=false` e saiu do EndpointSlice (`recebe-tráfego=não`).
+> - Em 2 minutos fora, **`RESTARTS` continuou 0**: readiness falhando **não** reinicia o container.
+> - O evento foi `Readiness probe failed: HTTP probe failed with statuscode: 503`: o Pod **respondeu**, só disse "não".
+> - A BFF teve **0 erros**: a outra réplica absorveu o tráfego.
+> - Depois do `ready`, ele voltou ao Service em **~5 s** (basta um sucesso da readiness).
+>
+> **Lição:** readiness decide **tráfego**, não o ciclo de vida do container.
+
 ### Parte A2 — processo travado
 
 ```mermaid
@@ -163,6 +173,18 @@ scripts/fault.sh orders freeze 90 $POD
 ```
 
 Observe por **~90 s** (até o Pod voltar a `READY=true`). Depois: `labs/lab-02/count-responses.sh "$T0"`.
+
+> **💡 O que você deveria ter notado (A2)**
+>
+> - As duas probes falharam por **timeout** (`context deadline exceeded`), não por `503`: o processo não respondia.
+> - Primeiro o Pod saiu do tráfego (**~14 s**, readiness), e só depois veio `Killing … failed liveness probe` (**~36 s**).
+> - Entre o `Killing` e o novo `Started` passaram **~30 s**: travado, o processo não tratou o `SIGTERM`, e o kubelet
+>   esperou o `terminationGracePeriodSeconds` inteiro antes do `SIGKILL`.
+> - O restart veio **antes** dos 90 s do `freeze` acabarem: foi a liveness que destravou a réplica.
+> - Se a BFF tinha conexões com essa réplica, alguns pedidos voltaram `504` (presos até o timeout de 3 s) e `409`
+>   (retry com a mesma chave enquanto o lease estava com a réplica travada).
+>
+> **Lição:** as duas probes falham, mas em tempos e com ações diferentes: **isolar** primeiro, **reiniciar** depois.
 
 ### Parte B — rollout sob carga (graceful shutdown)
 
@@ -192,6 +214,15 @@ sleep 15; kill %1
 labs/lab-02/count-responses.sh "$T0"
 ```
 
+> **💡 O que você deveria ter notado (B)**
+>
+> - O Pod antigo registrou `SIGTERM recebido: readiness=false, aguardando 5.0s antes de encerrar`.
+> - O Pod novo ficou `1/1` **antes** de um antigo ser encerrado (`maxSurge: 1, maxUnavailable: 0`).
+> - A BFF teve **0 erros** durante todo o rollout.
+>
+> **Lição:** um rollout sem erro depende de duas coisas juntas: a estratégia que só remove depois que o novo está
+> pronto **e** o graceful shutdown (sair dos endpoints antes de parar). O LAB 03 mostra o que acontece sem cada uma.
+
 ### Parte C — deploy quebrado (startup)
 
 ```mermaid
@@ -220,6 +251,26 @@ for p in ('startup', 'live', 'ready'):
     except Exception as e: print(p, e.code, e.read().decode()[:250])"
 ```
 
+> **O que esse comando faz.** Ele **não** cria um container: o `kubectl exec` roda um script Python curto **dentro do
+> container que já existe** — o Pod novo, quebrado (`$NEW`).
+>
+> | Trecho | Papel |
+> |---|---|
+> | `NEW=$(… --sort-by=.metadata.creationTimestamp … {.items[-1:]…})` | pega o Pod mais recente da Orders: o criado pelo `set env` |
+> | `kubectl -n ecommerce exec $NEW -- python -c "…"` | executa o Python do próprio container, no namespace de rede dele |
+> | `urllib.request.urlopen('http://127.0.0.1:8080/health/' + p)` | chama as 3 rotas de health no `localhost` do Pod, como o kubelet faz |
+> | `for p in ('startup', 'live', 'ready')` | consulta startup, liveness e readiness lado a lado |
+> | `try … except … e.code, e.read()` | um `503` vira exceção no `urllib`; o `except` imprime o código e o corpo (com o `last_error`) |
+>
+> **Por que assim:**
+> - **Por que de dentro do Pod:** ele nunca fica pronto, então **não está no Service** — não dá para alcançá-lo pela
+>   BFF, pelo NLB nem por `kubectl port-forward svc/…`. De dentro do Pod, `127.0.0.1:8080` sempre responde.
+> - **Por que Python e não `curl`:** a imagem é `python:3.12-slim` com sistema de arquivos somente leitura e usuário
+>   sem privilégios: não há `curl` nem `wget`, e não dá para instalá-los. O Python e a `urllib` (biblioteca padrão) já
+>   estão lá.
+> - **É a mesma técnica do `scripts/fault.sh`:** ele também faz `kubectl exec … python` para falar com a API admin em
+>   `127.0.0.1:8081`, que só escuta dentro do Pod.
+
 Espere **~2 min** e confira de novo:
 
 ```bash
@@ -228,6 +279,18 @@ kubectl -n ecommerce get events --field-selector involvedObject.name=$NEW | grep
 kubectl -n ecommerce rollout status deploy/orders-api --timeout=10s      # trava: o rollout não avança
 labs/lab-02/count-responses.sh "$T0"
 ```
+
+> **💡 O que você deveria ter notado (C)**
+>
+> - O Pod novo nunca passou de `0/1`, enquanto os **2 antigos seguiram `1/1`** atendendo.
+> - `/health/startup` respondeu `503` **com a causa** (`last_error: … AccessDeniedException …`); `/health/live`
+>   respondeu `200`: o processo está vivo, e reiniciar não conserta configuração errada.
+> - Após **~2 min** (60 × 2 s) veio `Container app failed startup probe, will be restarted`, e o `rollout status`
+>   ficou travado (`timed out waiting for the condition`).
+> - A BFF teve **0 erros**: o Pod quebrado nunca recebeu tráfego.
+>
+> **Lição:** startup probe + `maxUnavailable: 0` transformam um deploy quebrado em um rollout **parado**, não em
+> uma queda. O `last_error` na startup probe economiza a investigação.
 
 ### Parte D — dependência fora do ar (anti-cascata)
 
@@ -251,6 +314,15 @@ scripts/fault.sh orders cb
 labs/lab-02/count-responses.sh "$T0"
 scripts/fault.sh all reset
 ```
+
+> **💡 O que você deveria ter notado (D)**
+>
+> - A Orders continuou **`1/1`, sem nenhum evento de probe**, com a Inventory respondendo `503`.
+> - O Circuit Breaker abriu (`OPEN` / `HALF_OPEN`) e os pedidos voltaram `503 DEPENDENCY_UNAVAILABLE` com
+>   `Retry-After`: um erro de **negócio**, rápido e explicável, em vez de erro de conexão.
+>
+> **Lição:** a readiness **não** deve verificar dependências. Se verificasse, as 2 réplicas da Orders sairiam do
+> Service juntas e a falha da Inventory se espalharia até a BFF (cascata).
 
 ## 7. Observações
 

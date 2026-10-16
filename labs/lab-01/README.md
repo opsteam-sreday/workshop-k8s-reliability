@@ -143,6 +143,14 @@ echo $ORDER_ID
 
 > Esse segundo `curl` já é um **retry** com a mesma chave — ele devolve o mesmo pedido (veja 5.2).
 
+> **💡 O que você deveria ter notado (5.1)**
+>
+> - `HTTP/1.1 201` com `Idempotency-Replayed: false`, `X-Request-ID` e `Location: /orders/ord-…`.
+> - Corpo com `status: "CONFIRMED"`, `total_amount: "99.80"` (2 × 49.90) e `currency: "BRL"`.
+> - O segundo `curl` (que guardou o `ORDER_ID`) devolveu o **mesmo** pedido: já foi um retry.
+>
+> **Lição:** um pedido só é `CONFIRMED` depois de passar por BFF → Orders → Inventory → DynamoDB.
+
 ### 5.2 Retry com a mesma chave → replay
 
 ```bash
@@ -164,6 +172,14 @@ sequenceDiagram
     Note over O,I: nenhuma chamada nova à Inventory, nenhuma escrita de pedido
     O-->>C: 201 com a resposta armazenada + Idempotency-Replayed true
 ```
+
+> **💡 O que você deveria ter notado (5.2)**
+>
+> - `201` de novo, agora com `Idempotency-Replayed: true`.
+> - Mesmo `order_id`, mesmo `created_at` e mesmo corpo da primeira resposta.
+> - Nenhuma chamada nova à Inventory: a resposta veio do registro de idempotência.
+>
+> **Lição:** repetir com a **mesma** chave é seguro: o cliente recebe a resposta original, sem novo pedido.
 
 ### 5.3 Mesma chave, payload diferente → 409
 
@@ -189,6 +205,13 @@ flowchart LR
 
 > A comparação usa o **hash SHA-256 do payload canônico** (itens ordenados por SKU, preços normalizados para 2 casas, `currency` default `BRL`). Teste: inverter a ordem dos itens ou enviar `"unit_price": 49.9` (número) **não** gera conflito — é a mesma intenção.
 
+> **💡 O que você deveria ter notado (5.3)**
+>
+> - `409` com `"error":"IDEMPOTENCY_KEY_REUSED"`, mesmo com o pedido original já `COMPLETED`.
+> - A comparação é pelo hash do payload **canônico**: reordenar itens ou mandar `49.9` como número não gera conflito.
+>
+> **Lição:** a chave identifica **uma intenção**; reaproveitá-la para outra intenção é recusado, não "atualiza" o pedido.
+
 ### 5.4 Idempotency-Key inválida → 400
 
 ```bash
@@ -198,6 +221,12 @@ curl -s -X POST $BFF/orders -H "Content-Type: application/json" --data @/tmp/ord
 
 Esperado: `400` `INVALID_IDEMPOTENCY_KEY` nos dois casos (a chave é obrigatória e deve ser um UUID).
 
+> **💡 O que você deveria ter notado (5.4)**
+>
+> - `400` com `INVALID_IDEMPOTENCY_KEY` nos dois casos: chave `abc` (não é UUID) e chave ausente.
+>
+> **Lição:** sem chave válida não há como garantir idempotência, então a BFF recusa antes de chegar à Orders.
+
 ### 5.5 Consultar pedidos
 
 ```bash
@@ -206,6 +235,13 @@ curl -s "$BFF/orders?customer_id=$CUSTOMER&limit=10" | jq '{count, next_token, i
 ```
 
 `GET /orders` usa `Query` no índice `GSI1` (`GSI1PK = CUSTOMER#<customer_id>`), nunca `Scan`; a paginação usa `next_token`.
+
+> **💡 O que você deveria ter notado (5.5)**
+>
+> - `GET /orders/$ORDER_ID` devolve o pedido completo.
+> - `GET /orders?customer_id=…` traz `count`, `next_token` e a lista de `order_id` do cliente — um só, apesar dos retries.
+>
+> **Lição:** a listagem usa `Query` no `GSI1` (`CUSTOMER#<customer_id>`), nunca `Scan`, e pagina por `next_token`.
 
 ### 5.6 Inspecionar o DynamoDB
 
@@ -235,6 +271,14 @@ Converta o `expires_at`:
 date -r <expires_at>        # macOS   (Linux: date -d @<expires_at>)
 ```
 
+> **💡 O que você deveria ter notado (5.6)**
+>
+> - Pedido `ORDER#<order_id>` com `status`, `total_amount`, `reservation_id` e `GSI1PK`.
+> - Registro `IDEMP#<customer>#<key>`: `status=COMPLETED`, `version=1`, `attempts=1`, `reservation_state=CONFIRMED`, `response_status=201`.
+> - `expires_at` ≈ agora + 86400 s e TTL `ENABLED` no atributo `expires_at`.
+>
+> **Lição:** pedido e registro de idempotência vivem na mesma tabela; o registro guarda a resposta que o replay devolve por 24 h.
+
 ### 5.7 Verificar a reserva de estoque
 
 ```bash
@@ -242,6 +286,13 @@ scripts/fault.sh inventory state
 ```
 
 A saída (`<pod>: {...}`) mostra `reservations_total`, `reservations_by_status` (`RESERVED`/`RELEASED`) e, por SKU, `available`/`reserved`. Os retries das seções 5.1–5.2 **não** aumentaram o número de reservas: a reserva é identificada por `reservation_id = res-<order_id>` e `Idempotency-Key = reserve-<order_id>`.
+
+> **💡 O que você deveria ter notado (5.7)**
+>
+> - `reservations_total` não aumentou com os retries da 5.1–5.2.
+> - Por SKU, `available` e `reserved` refletem **uma** reserva de 2 unidades do `product-001`.
+>
+> **Lição:** a reserva também é idempotente: `reservation_id = res-<order_id>` faz a Inventory reconhecer a repetição.
 
 ### 5.8 EKS Pod Identity e isolamento IAM
 
@@ -266,6 +317,14 @@ Confira a associação e a policy:
 infrastructure/pod-identity.sh status
 cat infrastructure/orders-dynamodb-policy.json
 ```
+
+> **💡 O que você deveria ter notado (5.8)**
+>
+> - A Orders roda como `assumed-role/rw-<id>-orders-api/…`.
+> - `GetItem` e `Query` permitidos; `Scan`, `DescribeTable`, `DeleteItem` e `ListTables` com `AccessDenied`.
+> - BFF e Inventory sem credenciais (`Unable to locate credentials`, `IMDS_BLOCKED`); Pod avulso com `orders-api-sa` e `kubectl debug` negados.
+>
+> **Lição:** só a Orders acessa o DynamoDB, e só com as ações de que precisa — Kubernetes (SA), AWS (Pod Identity) e rede (NetworkPolicy) são camadas separadas.
 
 ### 5.9 Trace distribuído no HyperDX
 
@@ -296,6 +355,14 @@ Abra http://localhost:3000 e faça login.
                    └── DynamoDB.TransactWriteItems     (pedido + COMPLETED, atômico)
    ```
 3. Correlacione por `request_id`: `LogAttributes.request_id:"<X-Request-ID retornado>"` mostra os logs da BFF e da Orders com o **mesmo** `TraceId` (W3C Trace Context propagado).
+
+> **💡 O que você deveria ter notado (5.9)**
+>
+> - Os logs da chave: `Idempotency record criado (IN_PROGRESS)`, `Pedido CONFIRMED`, `Replay de resposta idempotente` e um `HTTP request completed` por tentativa.
+> - O trace atravessa `bff-api` → `orders-api` → `inventory-api` e termina em `DynamoDB.TransactWriteItems`.
+> - BFF e Orders com o **mesmo** `TraceId` para o mesmo `request_id` (W3C Trace Context propagado).
+>
+> **Lição:** com `idempotency.key`, `request_id` e `TraceId` dá para seguir uma operação de ponta a ponta, inclusive os retries.
 
 ### 5.10 Idempotência sob concorrência (k6 no cluster)
 
@@ -329,6 +396,14 @@ sequenceDiagram
 | `idempotency_violations` | 0 | nenhum pedido duplicado (threshold `count==0`) |
 | `idempotency_in_progress` | ≈ 19 | concorrentes barrados pelo lease |
 | `pedidos persistidos` (log do teardown) | 1 | um único pedido para a chave |
+
+> **💡 O que você deveria ter notado (5.10)**
+>
+> - `checks` 100%: toda resposta foi `201` ou `409 ORDER_IN_PROGRESS`.
+> - `idempotency_violations: 0` e `idempotency_in_progress` ≈ 19: uma VU venceu, as outras foram barradas pelo lease.
+> - No teardown: `pedidos persistidos=1` e replay final `201` com `Idempotency-Replayed=true`.
+>
+> **Lição:** o `PutItem` condicional (`attribute_not_exists`) garante um único executor, mesmo com 20 requisições simultâneas.
 
 ---
 
@@ -376,6 +451,12 @@ sequenceDiagram
     B-->>C: 201 + Idempotency-Replayed true (mesmo order_id)
 ```
 
+> **💡 O que você deveria ter notado (6)**
+>
+> - `HTTP/1.1 504` com `"error":"UPSTREAM_TIMEOUT"` e a mensagem pedindo para repetir com a **mesma** chave.
+>
+> **Lição:** para o cliente foi erro — mas isso não diz se o pedido foi criado (veja a seção 7).
+
 ## 7. Observações
 
 Logo após o 504, **antes** de repetir:
@@ -389,6 +470,13 @@ aws dynamodb get-item --region $AWS_REGION --table-name $TABLE_NAME --consistent
 
 - O registro está `COMPLETED`: a Orders API terminou o trabalho mesmo sem ninguém esperando a resposta.
 - No HyperDX, `ServiceName:"bff-api" LogAttributes.level:"ERROR"` mostra `Timeout chamando a Orders API` e a conclusão `504`; na Orders API, o mesmo `TraceId` termina em `201`. **O cliente viu erro; o sistema registrou sucesso.**
+
+> **💡 O que você deveria ter notado (7)**
+>
+> - Logo após o `504`, o registro `IDEMP#…$KEY2` já está `COMPLETED`.
+> - No HyperDX, a BFF registra `Timeout chamando a Orders API` e `504`; na Orders, o mesmo `TraceId` termina em `201`.
+>
+> **Lição:** **o cliente viu erro; o sistema registrou sucesso.** Sem idempotência, o retry criaria um segundo pedido.
 
 ## 8. Explicação técnica
 
@@ -416,6 +504,13 @@ curl -s -i -X POST $BFF/orders -H "Content-Type: application/json" \
 ```
 
 Esperado: `201`, `Idempotency-Replayed: true` e o `order_id` que já estava no DynamoDB.
+
+> **💡 O que você deveria ter notado (9)**
+>
+> - `201` com `Idempotency-Replayed: true` e o `order_id` que já estava no DynamoDB.
+> - Nenhum pedido nem reserva novos.
+>
+> **Lição:** a "correção" é o comportamento do cliente: repetir com a **mesma** `Idempotency-Key`.
 
 ## 10. Validação
 

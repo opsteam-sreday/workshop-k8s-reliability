@@ -102,6 +102,15 @@ kubectl -n ecommerce rollout status deploy/orders-api
 
 > **Por que `kubectl set env` e não `scripts/fault.sh orders cpu-work`?** A API admin altera somente os Pods **que já existem**. Os Pods criados pelo HPA nasceriam com o valor padrão (`0`) e não consumiriam CPU — o experimento se "auto-corrigiria". Com a variável no template do Deployment, **toda nova réplica herda** o comportamento, como aconteceria com um custo real de código.
 
+> **💡 O que você deveria ter notado (custo de CPU)**
+>
+> - O `set env` disparou um **rollout** da Orders: a variável faz parte do template dos Pods, então as réplicas foram
+>   recriadas — e qualquer réplica nova que o HPA criar depois já nasce com `ORDERS_CPU_WORK_MS=40`.
+> - Sem carga ainda, o HPA continua em `2` réplicas: o custo só aparece quando chegam requisições.
+>
+> **Lição:** configuração de comportamento vai no **template** (Deployment), não em Pods vivos — senão o autoscaling
+> cria réplicas diferentes das que você testou.
+
 Dispare a carga (Job k6 no nó de observabilidade, isolado dos nós `apps`):
 
 ```bash
@@ -109,6 +118,14 @@ scripts/k6.sh stress-orders.js RATE=60 DURATION=6m
 ```
 
 O script faz rampa de 1 min até 60 req/s, platô de 6 min e descida de 30 s. Erros são esperados sob estresse e não abortam o teste.
+
+> **💡 O que você deveria ter notado (carga)**
+>
+> - O k6 roda num Job no nó `observability`, não nos nós `apps`: a CPU que ele gasta não entra na conta do HPA.
+> - Rampa de **1 min** até **60 req/s**, platô de **6 min**, descida de **30 s**; erros sob estresse são esperados e
+>   não abortam o teste.
+>
+> **Lição:** o gerador de carga precisa estar isolado do que está sendo medido.
 
 Em paralelo (terminal 3, se possível):
 
@@ -162,6 +179,16 @@ flowchart LR
     G --> H["limitado a minReplicas: 2"]
 ```
 
+> **💡 O que você deveria ter notado (HPA)**
+>
+> - `TARGETS` muito acima de `60%` — centenas de %, porque a utilização é medida sobre o **request** (250m), não
+>   sobre o limit.
+> - `REPLICAS` sobe em **degraus** (até +100% ou +4 Pods a cada 15 s) e para em **12** (`maxReplicas`), mesmo que a
+>   conta peça ~16.
+> - Eventos `SuccessfulRescale … cpu resource utilization (percentage of request) above target`.
+>
+> **Lição:** o HPA escala **Pods**, não capacidade: ele cria réplicas mesmo que não haja onde colocá-las.
+
 ### 7.2 Pods Pending e FailedScheduling
 
 ```bash
@@ -171,6 +198,16 @@ kubectl get events -A --field-selector reason=FailedScheduling \
 ```
 
 Mensagem típica: `0/3 nodes are available: 1 node(s) had untolerated taint {workload: observability}, 2 Insufficient cpu.` — o nó de observabilidade está protegido por taint; os nós `apps` estão cheios **de requests**, não necessariamente de uso.
+
+> **💡 O que você deveria ter notado (Pods Pending)**
+>
+> - Réplicas novas da Orders em `Pending`, com `0/3 nodes are available: … untolerated taint {workload: observability},
+>   2 Insufficient cpu`.
+> - O nó `observability` não é opção (taint), e os 2 nós `apps` estão cheios **de requests**, não necessariamente de
+>   uso real de CPU.
+>
+> **Lição:** o scheduler agenda pelos **requests** declarados. `Pending` por `Insufficient cpu` é o sinal que aciona
+> o Cluster Autoscaler.
 
 ### 7.3 Cluster Autoscaler (Node Autoscaling)
 
@@ -198,6 +235,15 @@ flowchart LR
 > As APIs têm `topologySpreadConstraints` (`maxSkew: 1` por nó, `DoNotSchedule`): o scheduler mantém as réplicas da
 > Orders equilibradas entre os nós `apps`. Uma réplica pode ficar `Pending` mesmo com CPU livre em outro nó, se ir
 > para lá deixasse a diferença maior que 1. O CA trata isso como qualquer Pod Pending: o nó novo (0 réplicas) a recebe.
+
+> **💡 O que você deveria ter notado (Cluster Autoscaler)**
+>
+> - `Final scale-up plan: [{eks-apps-… 2->3 (max: 5)}]` no log do CA e `TriggeredScaleUp` no Pod `Pending`.
+> - O nó novo apareceu `NotReady` e só ficou `Ready` em **≈2–4 min**; nesse intervalo os Pods continuaram `Pending`.
+> - Assim que o nó ficou `Ready`, os `Pending` foram agendados nele.
+>
+> **Lição:** autoscaling de nó **não é instantâneo**: há minutos em que a capacidade não existe. É preciso folga
+> (requests, `maxReplicas`, overprovisioning) para atravessar essa janela.
 
 ### 7.4 HyperDX / ClickHouse
 
@@ -258,6 +304,17 @@ flowchart LR
     E --> F["CA: unneeded por 2 min (e ≥ 2 min desde o scale-up)"]
     F --> G["drena e remove o nó → 2 nós (minSize)"]
 ```
+
+> **💡 O que você deveria ter notado (fim da carga)**
+>
+> - A CPU caiu logo, mas as réplicas só começaram a cair **120 s** depois (stabilization do scale-down) e então
+>   reduziram pela metade a cada **30 s** até **2**.
+> - O nó extra só saiu depois de ficar subutilizado por **2 min** (e com ≥ 2 min desde o scale-up): o node group
+>   voltou a **2 nós** (`minSize`).
+> - Ao final, as 2 réplicas da Orders podem ter ficado **no mesmo nó**: o scale-down remove réplicas sem consultar o
+>   topology spread (a regra só vale para agendar). Um `rollout restart` redistribui (LAB 04).
+>
+> **Lição:** subir é rápido e agressivo; descer é lento de propósito, para não oscilar — e não reequilibra os Pods.
 
 ### Achado da validação real: preemption durante o scale-out
 
@@ -325,6 +382,16 @@ kubectl get nodes -l workload=apps            # volta a 2 nós
 | CA adicionou nó | `TriggeredScaleUp` / `Final scale-up plan`; nó `apps` novo com `CREATED` durante o teste | `verify.sh`: `✔ Cluster Autoscaler disparou scale-up`; seção "Nós" do arquivo |
 | Inventory não foi preemptada | nenhum evento `Preempted` para `inventory-api` | `kubectl get events -A --field-selector reason=Preempted` |
 | Recuperação | réplicas voltam a 2 e o node group a 2 nós, ~5–8 min após a carga | `kubectl -n ecommerce get hpa orders-api`; `kubectl get nodes -l workload=apps` |
+
+> **💡 O que você deveria ter notado (validação)**
+>
+> - `verify.sh` mostrou `✔ HPA escalou (SuccessfulRescale)` e `✔ Cluster Autoscaler disparou scale-up`, com a
+>   evidência em `.workshop/lab-06-evidence.txt`.
+> - Nenhum evento `Preempted` para a `inventory-api`: a PriorityClass `critical-services` a protegeu durante o pico.
+> - Depois de ~5–8 min sem carga, `REPLICAS` voltou a 2 e o node group a 2 nós.
+>
+> **Lição:** HPA e Cluster Autoscaler são dois laços independentes — um reage à CPU dos Pods, o outro a Pods sem
+> lugar — e ambos precisam de requests corretos para funcionar.
 
 ## 11. Challenge
 
