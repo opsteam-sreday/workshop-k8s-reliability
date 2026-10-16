@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, Response
 
 from workshop_common.config import env_bool, env_int, env_str
 from workshop_common.context import current_request_id
-from workshop_common.health import HealthState, health_router
+from workshop_common.health import HealthState, health_admin_router, health_router
 from workshop_common.http import ApiError, RequestContextMiddleware, install_error_handlers
 from workshop_common.telemetry import instrument_fastapi, setup_telemetry
 
@@ -86,7 +86,28 @@ def _identity_headers(x_customer_id: str | None) -> dict[str, str]:
     return {"X-Customer-ID": x_customer_id}
 
 
-@app.post("/orders")
+# Só documentação (Swagger): a BFF lê o JSON cru e deixa a validação completa para a Orders API.
+_ORDER_EXAMPLE = {"customer_id": "customer-123",
+                  "items": [{"sku": "product-001", "quantity": 2, "unit_price": "49.90"}]}
+_ORDER_BODY_OPENAPI = {"requestBody": {"required": True, "content": {"application/json": {
+    "schema": {
+        "type": "object", "required": ["customer_id", "items"],
+        "properties": {
+            "customer_id": {"type": "string", "maxLength": 64, "pattern": "^[A-Za-z0-9._:-]+$"},
+            "items": {"type": "array", "minItems": 1, "maxItems": 50, "items": {
+                "type": "object", "required": ["sku", "quantity", "unit_price"],
+                "properties": {
+                    "sku": {"type": "string", "description": "product-001 … product-010, product-limited"},
+                    "quantity": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    "unit_price": {"type": "string", "description": "Decimal com até 2 casas", "example": "49.90"},
+                }}},
+            "currency": {"type": "string", "default": "BRL", "pattern": "^[A-Z]{3}$"},
+        }},
+    "example": _ORDER_EXAMPLE,
+}}}}
+
+
+@app.post("/orders", openapi_extra=_ORDER_BODY_OPENAPI)
 async def create_order(request: Request, idempotency_key: str | None = Header(default=None),
                        x_customer_id: str | None = Header(default=None)):
     try:
@@ -121,6 +142,7 @@ async def get_order(order_id: str, x_customer_id: str | None = Header(default=No
 
 
 admin_app = FastAPI(title="BFF Admin (workshop only)")
+admin_app.include_router(health_admin_router(health))
 
 
 @admin_app.get("/admin/faults")

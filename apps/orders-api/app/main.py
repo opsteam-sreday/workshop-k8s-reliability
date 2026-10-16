@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from workshop_common.config import env_bool
-from workshop_common.health import HealthState, health_router
+from workshop_common.health import HealthState, health_admin_router, health_router
 from workshop_common.http import ApiError, RequestContextMiddleware, error_body, install_error_handlers
 from workshop_common.stress import burn_cpu
 from workshop_common.telemetry import instrument_fastapi, setup_telemetry
@@ -100,7 +100,28 @@ def _identity(header_customer: str | None, body_customer: str | None) -> str:
     return body_customer
 
 
-@app.post("/orders")
+def _inline_defs(schema: dict) -> dict:
+    """openapi_extra não resolve "#/$defs/...": substitui cada referência pelo schema referenciado."""
+    defs = schema.pop("$defs", {})
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                return walk(defs[node["$ref"].rsplit("/", 1)[-1]])
+            return {k: walk(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+    return walk(schema)
+
+
+# Só documentação (Swagger): o corpo é lido cru para manter os erros INVALID_PAYLOAD do contrato.
+ORDER_EXAMPLE = {"customer_id": "customer-123", "items": [{"sku": "product-001", "quantity": 2, "unit_price": "49.90"}]}
+_ORDER_BODY_OPENAPI = {"requestBody": {"required": True, "content": {"application/json": {
+    "schema": _inline_defs(CreateOrderRequest.model_json_schema()), "example": ORDER_EXAMPLE}}}}
+
+
+@app.post("/orders", openapi_extra=_ORDER_BODY_OPENAPI)
 async def create_order(request: Request, idempotency_key: str | None = Header(default=None),
                        x_customer_id: str | None = Header(default=None)):
     key = normalize_idempotency_key(idempotency_key)
@@ -159,6 +180,7 @@ async def get_order(order_id: str, x_customer_id: str | None = Header(default=No
 # API administrativa de laboratório: escuta apenas em 127.0.0.1
 # --------------------------------------------------------------------------------------
 admin_app = FastAPI(title="Orders Admin (workshop only)")
+admin_app.include_router(health_admin_router(health))
 
 
 class OrdersFaults(BaseModel):

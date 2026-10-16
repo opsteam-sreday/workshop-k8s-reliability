@@ -1,3 +1,4 @@
+import json
 from decimal import Decimal
 
 import pytest
@@ -52,3 +53,12 @@ def test_unknown_fields_rejected():
 ])
 def test_idempotency_key_normalization(raw, expected):
     assert normalize_idempotency_key(raw) == expected
+
+
+def test_openapi_example_is_a_valid_order():
+    from app.main import ORDER_EXAMPLE, app
+
+    body = app.openapi()["paths"]["/orders"]["post"]["requestBody"]["content"]["application/json"]
+    assert "$ref" not in json.dumps(body["schema"])
+    CreateOrderRequest.model_validate(body["example"])
+    assert body["example"] == ORDER_EXAMPLE

@@ -318,3 +318,31 @@ lab05-crash: ## Falha sem log ERROR: crash da Orders após a reserva
 
 lab05-stop: ## Remove as falhas do LAB 05
 	scripts/fault.sh all reset
+
+##@ LAB 06 — Probes & Graceful Shutdown (POD=<pod da Orders>)
+.PHONY: lab06-load lab06-watch lab06-not-ready lab06-ready lab06-freeze lab06-rollout lab06-break lab06-undo
+lab06-load: ## Carga contínua com retry do cliente (RATE=10 DURATION=30m)
+	scripts/k6.sh create-orders.js RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),30m)
+
+lab06-watch: ## Painel do Pod: READY, RESTARTS e se recebe tráfego (POD=...)
+	labs/lab-06/watch-pod.sh $(POD)
+
+lab06-not-ready: ## A1: readiness 503 / liveness 200 em UM Pod (POD=...)
+	scripts/fault.sh orders not-ready $(POD)
+
+lab06-ready: ## Desfaz o not-ready (todas as réplicas)
+	scripts/fault.sh orders ready
+
+lab06-freeze: ## A2: trava o event loop de UM Pod por 90 s (POD=...)
+	scripts/fault.sh orders freeze 90 $(POD)
+
+lab06-rollout: ## B: rollout da Orders sob carga
+	kubectl -n ecommerce rollout restart deploy/orders-api
+	kubectl -n ecommerce rollout status deploy/orders-api
+
+lab06-break: ## C: deploy quebrado (tabela inexistente)
+	kubectl -n ecommerce set env deploy/orders-api ORDERS_TABLE_NAME=tabela-que-nao-existe
+
+lab06-undo: ## C: desfaz o deploy quebrado
+	kubectl -n ecommerce rollout undo deploy/orders-api
+	kubectl -n ecommerce rollout status deploy/orders-api

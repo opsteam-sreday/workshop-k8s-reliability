@@ -104,13 +104,17 @@ confirm() {
 
 # Executa uma chamada HTTP na API administrativa (127.0.0.1:8081) de CADA Pod do deployment.
 # Uso: admin_call <deployment> <METHOD> <path> [json]
-admin_call() {
+admin_call() {   # ADMIN_POD=<nome> restringe a um único Pod (padrão: todos os Pods do Deployment)
   local deploy="$1" method="$2" path="$3" body="${4:-}"
   local pods
   # Somente Pods Running que NÃO estão em terminação (rollouts deixam Pods "Terminating" como Running).
   pods="$(kubectl -n ecommerce get pods -l "app.kubernetes.io/name=${deploy}" --field-selector=status.phase=Running \
     -o go-template='{{range .items}}{{if not .metadata.deletionTimestamp}}{{.metadata.name}} {{end}}{{end}}')"
   [[ -n "$pods" ]] || fail "Nenhum Pod Running para ${deploy}"
+  if [[ -n "${ADMIN_POD:-}" ]]; then
+    [[ " $pods " == *" ${ADMIN_POD} "* ]] || fail "Pod ${ADMIN_POD} não é um Pod Running de ${deploy} (disponíveis: ${pods})"
+    pods="$ADMIN_POD"
+  fi
   for pod in $pods; do
     printf '%s: ' "$pod"
     kubectl -n ecommerce exec "$pod" -c app -- python -c '
