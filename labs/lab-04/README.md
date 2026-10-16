@@ -4,8 +4,6 @@
 >
 > Duração estimada: 50 min · Partes A–D (afinidades) ≈ 30 min · Parte E (topology spread) ≈ 15 min · Parte F ≈ 5 min
 
-> ⚠ Rascunho: partes A–D ainda não validadas em cluster (parte E validada em rw-0001).
-
 ---
 
 ## 1. Cenário
@@ -456,24 +454,30 @@ Sem comandos: preencha mentalmente (ou em grupo) a tabela da seção 8 com o que
 
 ## 7. Observações
 
-### A–D — comportamento esperado
+### A–D — afinidades
 
-Ainda não medido em cluster. O que a semântica do scheduler garante:
+Valores medidos no cluster `rw-cluster0001` (10 pedidos/s; nós `apps` em `us-east-1c` e `us-east-1b`), na validação
+deste lab. Nenhuma das partes gerou erro na BFF: em todas, as réplicas antigas (ou as que já rodavam) seguiram
+atendendo enquanto o scheduler recusava as novas.
 
-| Parte | Terminal 1 (Pods) | Terminal 2 (`FailedScheduling`) | BFF (`count-responses.sh`) |
+| Parte | Pods | Evento `FailedScheduling` (trecho) | BFF |
 |---|---|---|---|
-| A1 | 1 BFF nova `Pending` + 2 antigas `Running` | `didn't match Pod's node affinity/selector` | sem 5xx (as antigas atendem) |
-| A2 | rollout normal, 1 BFF por nó | nenhum | sem 5xx |
-| A3 | as 2 BFF no nó A | nenhum | sem 5xx |
-| B1 | 1 Orders nova `Pending` + 2 antigas `Running` | `didn't match pod anti-affinity rules` | sem 5xx |
-| B2 | rollout normal, 1 Orders por nó | nenhum | sem 5xx |
-| B3 | 3ª Orders `Pending` | `didn't match pod anti-affinity rules` | sem 5xx |
-| C | 3 Orders `Running`, 2 × 1 | nenhum | sem 5xx |
-| D1 | rollout normal, 1 BFF por nó | nenhum | sem 5xx |
-| D2 | 1 BFF nova no nó da Inventory + 1 nova `Pending` + 1 antiga | `didn't match pod affinity rules`, `didn't match pod topology spread constraints` | sem 5xx |
+| A1 | 1 BFF nova `Pending` + 2 antigas `Running`; `rollout status` → `timed out waiting for the condition` | `2 node(s) didn't match Pod's node affinity/selector` | 503 × `201`, 0 erros |
+| A2 | rollout concluído em **6 s**, 1 BFF por nó | nenhum | sem 5xx |
+| A3 | rollout concluído; **as 2 BFF no mesmo nó** (zona A) | nenhum | 123 × `201`, 0 erros |
+| B1 | 1 Orders nova `Pending` + 2 antigas `Running`; rollout travado | `2 node(s) didn't match pod anti-affinity rules` | 491 × `201`, 0 erros |
+| B2 | rollout concluído em **7 s**, 1 Orders por nó | nenhum | sem 5xx |
+| B3 | 3ª Orders `Pending`, com o nó em **67%** de CPU reservada (1300m de 1930m) | `2 node(s) didn't match pod anti-affinity rules` | 514 × `201`, 0 erros |
+| C | 3 Orders `Running`, 2 × 1 | nenhum | 454 × `201`, 0 erros |
+| D1 | rollout concluído; BFF continua 1 por nó (uma delas no nó da Inventory) | nenhum | 85 × `201`, 0 erros |
+| D2 | 1 BFF nova no nó da Inventory + 1 nova `Pending` + 1 antiga `Running`; rollout travado | `1 node(s) didn't match pod affinity rules, 1 node(s) didn't match pod topology spread constraints` | 556 × `201`, 0 erros |
 
-O texto exato do evento também lista o nó `observability` (`had untolerated taint(s)`) e os nós eliminados por outros
-motivos; procure a parte que corresponde à regra do passo.
+O texto completo do evento também lista o nó `observability` (`had untolerated taint(s)`) e a avaliação de preemption
+(`Preemption is not helpful for scheduling`); procure a parte que corresponde à regra do passo.
+
+> **Observado antes da validação:** depois de um pico do HPA (LAB 06), as 2 réplicas da Orders estavam **no mesmo nó**.
+> No scale-down, o ReplicaSet remove réplicas sem consultar o topology spread — a regra vale só para agendar.
+> Um `rollout restart` (ou o descheduler) redistribui.
 
 ### E — topology spread
 

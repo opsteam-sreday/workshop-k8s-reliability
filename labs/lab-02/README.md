@@ -44,13 +44,13 @@ tráfego e com o container. Para isso, a API admin (só `127.0.0.1`, via `kubect
 
 ## 2. Hipótese
 
-1. Com **readiness** falhando e liveness OK, o Pod sai do tráfego em ~10 s e **nunca** é reiniciado.
-2. Com o processo **travado**, o Pod primeiro sai do tráfego (readiness) e, ~30 s depois, é **reiniciado** (liveness).
-3. Um **rollout** sob carga não gera erros: no `SIGTERM` a réplica deixa de ficar pronta e espera 5 s antes de parar.
-4. Um deploy com configuração errada **não derruba o serviço**: o Pod novo nunca fica pronto, o rollout não avança e
-   as réplicas antigas continuam atendendo.
-5. Com a **Inventory fora do ar**, a Orders **continua pronta** (a readiness não verifica dependências): o erro
-   aparece como `503 DEPENDENCY_UNAVAILABLE`, não como Pods `NotReady`.
+| # | Situação | Hipótese | Probe envolvida | Parte |
+|---|---|---|---|---|
+| 1 | Readiness falha, liveness OK | o Pod sai do tráfego em ~10 s e **nunca** é reiniciado | readiness | A1 |
+| 2 | Processo **travado** | o Pod primeiro sai do tráfego e, ~30 s depois, é **reiniciado** | readiness, depois liveness | A2 |
+| 3 | **Rollout** sob carga | nenhum erro: no `SIGTERM` a réplica deixa de ficar pronta e espera 5 s antes de parar | readiness (graceful shutdown) | B |
+| 4 | Deploy com configuração errada | o serviço **não cai**: o Pod novo nunca fica pronto, o rollout não avança e as réplicas antigas seguem atendendo | startup | C |
+| 5 | **Inventory fora do ar** | a Orders **continua pronta** (a readiness não verifica dependências); o erro aparece como `503 DEPENDENCY_UNAVAILABLE`, não como Pods `NotReady` | nenhuma (anti-cascata) | D |
 
 ## 3. Pré-requisitos
 

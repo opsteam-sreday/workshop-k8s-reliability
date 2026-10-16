@@ -1,7 +1,5 @@
 # LAB 03 — RollingUpdate & PodDisruptionBudget
 
-> ⚠ Rascunho: comportamentos ainda não validados em cluster.
-
 > **Break it → Observe it → Understand it → Fix it → Validate it**
 >
 > Duração estimada: 40 min
@@ -37,8 +35,9 @@ flowchart LR
 
 1. Com `maxSurge: 1, maxUnavailable: 0`, um rollout sob carga **não gera erros**: um Pod novo só substitui um antigo
    depois de ficar pronto.
-2. Com `maxSurge: 0, maxUnavailable: 100%`, o rollout derruba **todas** as réplicas de uma vez e abre uma janela sem
-   nenhum endpoint pronto: a BFF responde `503 DEPENDENCY_UNAVAILABLE`.
+2. Com `maxSurge: 0, maxUnavailable: 100%`, o rollout derruba **todas** as réplicas de uma vez. Se a aplicação faz
+   graceful shutdown (espera 5 s, LAB 02) e sobe mais rápido do que isso, as antigas cobrem a janela e não há erro;
+   **sem** graceful shutdown, abre-se uma janela sem ninguém atendendo e a BFF responde `503`/`504`.
 3. `Recreate` na Inventory (réplica única) sempre tem uma janela de indisponibilidade em cada rollout.
 4. Uma PDB com `maxUnavailable: 0` **bloqueia** o `kubectl drain`; com `maxUnavailable: 1`, o drain prossegue um Pod
    por vez.
@@ -97,7 +96,8 @@ labs/lab-02/count-responses.sh "$T0"
 | Parte | Cenário | Ação | Comportamento esperado | Como verificar |
 |---|---|---|---|---|
 | A | Rollout seguro (1/0) | `kubectl rollout restart deploy/orders-api` | Pod novo sobe e fica pronto antes de um antigo sair; 0 erros | terminal 1; `count-responses.sh` só com `201` |
-| B | Rollout agressivo (0/100%) | patch `orders-aggressive-rollout` + `rollout restart` | as 2 réplicas saem juntas; janela sem endpoints; `503` na BFF | terminal 1 (0 Pods prontos); `count-responses.sh` com `503` |
+| B1 | Rollout agressivo (0/100%) com graceful shutdown | patch `orders-aggressive-rollout` + `rollout restart` | as 2 réplicas saem juntas, mas atendem até as novas ficarem prontas: 0 erros | terminal 1; `count-responses.sh` |
+| B2 | Rollout agressivo sem graceful shutdown | + `SHUTDOWN_DELAY_SECONDS=0` | janela sem ninguém atendendo: dezenas de `503`/`504` por rollout; com a estratégia segura, só alguns | `count-responses.sh` |
 | C | `Recreate` na Inventory | `kubectl rollout restart deploy/inventory-api` | o Pod antigo encerra **antes** de o novo existir; `503 DEPENDENCY_UNAVAILABLE` na janela | terminal 1; `count-responses.sh`; `scripts/fault.sh orders cb` |
 | D | PDB bloqueando drain | patch `orders-pdb-zero` + `kubectl drain` | drain retenta `Cannot evict pod as it would violate the pod's disruption budget` | saída do drain; `kubectl get pdb` (ALLOWED 0) |
 | D | PDB liberando drain | patch `orders-pdb-restore` + drain de novo | drain conclui, um Pod da Orders por vez | saída do drain; terminal 1 |
@@ -144,9 +144,31 @@ export T0=$(date -u +%FT%TZ)
 kubectl -n ecommerce rollout restart deploy/orders-api
 kubectl -n ecommerce rollout status deploy/orders-api
 sleep 15; labs/lab-02/count-responses.sh "$T0"
+```
 
-# volta para a estratégia do manifest
+**B2 — o mesmo rollout agressivo, sem graceful shutdown.** `SHUTDOWN_DELAY_SECONDS=0` faz o processo parar no
+`SIGTERM` (o padrão, 5 s, vem do LAB 02). A troca da variável já dispara um rollout, mas quem encerra nele são os Pods
+antigos (com 5 s): por isso o teste é o `rollout restart` seguinte.
+
+```bash
+kubectl -n ecommerce set env deploy/orders-api SHUTDOWN_DELAY_SECONDS=0
+kubectl -n ecommerce rollout status deploy/orders-api
+sleep 20
+export T0=$(date -u +%FT%TZ)
+kubectl -n ecommerce rollout restart deploy/orders-api
+kubectl -n ecommerce rollout status deploy/orders-api
+sleep 15; labs/lab-02/count-responses.sh "$T0"
+
+# contraprova: estratégia segura, ainda sem graceful shutdown
 kubectl -n ecommerce patch deploy orders-api --patch-file kubernetes/labs/rollout/orders-safe-rollout.patch.yaml
+export T0=$(date -u +%FT%TZ)
+kubectl -n ecommerce rollout restart deploy/orders-api
+kubectl -n ecommerce rollout status deploy/orders-api
+sleep 15; labs/lab-02/count-responses.sh "$T0"
+
+# volta ao manifest: estratégia segura (já aplicada) e graceful shutdown de 5 s
+kubectl -n ecommerce set env deploy/orders-api SHUTDOWN_DELAY_SECONDS-
+kubectl -n ecommerce rollout status deploy/orders-api
 ```
 
 ```mermaid
@@ -157,12 +179,17 @@ sequenceDiagram
     participant N as 2 Pods novos
     participant B as BFF
     D->>O: encerra os 2 de uma vez (maxUnavailable 100%)
-    O-->>O: readiness 503, saem dos endpoints
-    D->>N: cria os 2 novos (maxSurge 0: só depois dos antigos saírem)
-    Note over N: startup: warm-up do DynamoDB (GetItem) antes de ficar pronto
-    B->>B: POST /orders sem endpoint pronto na orders-api
-    B-->>B: erro de transporte vira 503 DEPENDENCY_UNAVAILABLE + Retry-After 1
-    N-->>B: Pods novos prontos: pedidos voltam a 201
+    D->>N: cria os 2 novos ao mesmo tempo (maxSurge 0, mas os antigos já contam como indisponíveis)
+    Note over N: startup ~3 s (warm-up do DynamoDB)
+    alt B1: graceful shutdown (5 s)
+        O-->>B: seguem atendendo (endpoints em terminação ainda servindo)
+        N-->>B: prontos antes de os antigos pararem: 0 erros
+    else B2: SHUTDOWN_DELAY_SECONDS=0
+        O-->>O: param no SIGTERM
+        B->>B: requisições sem ninguém atendendo
+        B-->>B: 503 DEPENDENCY_UNAVAILABLE (conexão recusada) e 504 UPSTREAM_TIMEOUT
+        N-->>B: prontos: pedidos voltam a 201
+    end
 ```
 
 ### Parte C — `Recreate` na Inventory
@@ -278,50 +305,66 @@ flowchart LR
 
 ## 7. Observações
 
-> Comportamento **esperado**, derivado da semântica do Kubernetes e da configuração do repo. Os valores medidos
-> entram aqui depois da validação em cluster.
+Valores medidos no cluster `rw-cluster0001` (10 pedidos/s), na validação deste lab. Os seus tempos podem variar
+alguns segundos.
 
 ### A — rollout seguro
 
-| O que aparece | Onde |
+| O que aparece | Valor medido |
 |---|---|
-| 3 Pods da Orders por alguns segundos (2 antigos + 1 novo), nunca menos de 2 prontos | terminal 1 |
-| log `SIGTERM recebido: readiness=false, aguardando 5.0s antes de encerrar` em cada Pod antigo | `kubectl logs` do Pod antigo |
-| respostas da BFF só `201` | `count-responses.sh` |
+| rollout completo da Orders (2 réplicas, um Pod novo por vez) | **7 s** |
+| respostas da BFF no rollout | **252 × `201`, 0 erros** |
 
 ### B — rollout agressivo
 
-| O que aparece | Onde |
+| Estratégia | Graceful shutdown de 5 s (padrão) | Sem graceful shutdown (`SHUTDOWN_DELAY_SECONDS=0`) |
+|---|---|---|
+| segura (`maxSurge 1 / maxUnavailable 0`) | **0 erros** (parte A) | **2–3 erros** por rollout (2 rodadas) |
+| agressiva (`maxSurge 0 / maxUnavailable 100%`) | **0 erros** (237 × `201`) | **21–27 erros** por rollout: 13–18 × `503` + 7–9 × `504` (3 rodadas) |
+
+Linha do tempo da B1 (agressiva, com graceful shutdown):
+
+| Instante | Evento |
 |---|---|
-| os 2 Pods antigos entram em `Terminating` juntos; nenhum Pod novo até eles saírem | terminal 1 |
-| uma janela com **0** Pods prontos da Orders (dura o graceful shutdown + o startup do Pod novo) | terminal 1 |
-| `503 DEPENDENCY_UNAVAILABLE` (BFF: "Orders API indisponível", `Retry-After: 1`); o k6 repete e boa parte se recupera | `count-responses.sh`; log da BFF |
+| 03:59:33 | os **2** Pods antigos entram em terminação juntos; os 2 novos são criados no mesmo segundo |
+| 03:59:36 e 03:59:38 | os novos ficam prontos (~3–5 s de startup) |
+| 03:59:39 | os antigos encerram (5 s de espera + drenagem) |
+
+Os antigos atenderam até os novos ficarem prontos: o graceful shutdown cobriu a janela. Sem ele (B2), os antigos
+param no `SIGTERM` e as requisições dos ~3 s de startup falham.
 
 ### C — `Recreate`
 
-| O que aparece | Onde |
+| Instante | Evento |
 |---|---|
-| o Pod antigo some **antes** de o novo aparecer (`Recreate` nunca roda as duas versões juntas) | terminal 1 |
-| `503 DEPENDENCY_UNAVAILABLE` na janela; o Circuit Breaker da Orders pode abrir (`OPEN`) e depois voltar a `CLOSED` | `count-responses.sh`; `fault.sh orders cb` |
-| o estoque volta ao catálogo inicial (estado em memória do Pod antigo perdido) | `scripts/fault.sh inventory state` |
+| 04:05:52 | o Pod antigo da Inventory entra em terminação (5 s de graceful shutdown) |
+| 04:05:57 | o Pod antigo encerra |
+| 04:05:58 | **só então** o Pod novo é criado (`Recreate`) |
+| 04:06:02 | o Pod novo fica pronto: a Inventory ficou **~5 s** fora |
+| 04:05:57 → 04:06:12 | `503` na BFF por **~15 s** (**218 respostas**): o Circuit Breaker abriu (`OPEN` nas 2 réplicas da Orders) e só fecha após os 15 s de `recovery_timeout` (LAB 07) |
+
+O Circuit Breaker protege a Inventory, mas **estende** a indisponibilidade percebida além da queda real.
 
 ### D — PDB e drain
 
-| O que aparece | Onde |
+| O que aparece | Valor medido |
 |---|---|
-| `kubectl get pdb orders-api`: `ALLOWED DISRUPTIONS 0` | terminal 3 |
-| drain: `evicting pod ecommerce/orders-api-…` seguido de `error when evicting pods/"orders-api-…" … Cannot evict pod as it would violate the pod's disruption budget` a cada 5 s, até o `--timeout` | saída do drain |
-| o nó fica `Ready,SchedulingDisabled`; os outros Pods (BFF, CoreDNS etc.) já foram despejados; a Orders continua lá | `kubectl get nodes`; terminal 1 |
-| com `maxUnavailable: 1`: o drain conclui; a Orders sai e é recriada no outro nó | saída do drain; terminal 1 |
-| respostas da BFF no drain liberado: só `201` (uma réplica por vez + graceful shutdown) | `count-responses.sh` |
+| `kubectl get pdb orders-api` com `maxUnavailable: 0` | `ALLOWED DISRUPTIONS 0` |
+| drain com a PDB em 0 | **12 tentativas** em 60 s: `error when evicting pods/"orders-api-…" … Cannot evict pod as it would violate the pod's disruption budget`, depois `global timeout reached: 1m0s` |
+| estado do nó | `Ready,SchedulingDisabled`; a BFF do nó (PDB permite 1) e o CoreDNS foram despejados; a Orders continuou lá |
+| drain com `maxUnavailable: 1` | **concluído em 9 s**; BFF com **415 × `201`, 0 erros** |
 
 ### E — fora da PDB
 
-| O que aparece | Onde |
+| Caso | Valor medido |
 |---|---|
-| E1: `pod "orders-api-…" deleted` mesmo com `ALLOWED DISRUPTIONS 0`; o ReplicaSet recria | terminal 1 |
-| E2: o rollout conclui normalmente com a PDB em 0 (o ritmo é o da `strategy`, não o da PDB) | `rollout status` |
-| E3: o drain despeja a **única** Inventory sem esperar nada; `503 DEPENDENCY_UNAVAILABLE` até o Pod subir no outro nó | saída do drain; `count-responses.sh` |
+| E1 — `kubectl delete pod` com `ALLOWED DISRUPTIONS 0` | o Pod é apagado; o ReplicaSet recria; **0 erros** (311 × `201`, graceful shutdown) |
+| E2 — `rollout restart` com a PDB em 0 | o rollout conclui normalmente; **0 erros** (250 × `201`) |
+| E3 — drain do nó da Inventory (`maxUnavailable: 1`, 1 réplica) | a PDB **liberou** a única réplica; drain em 31 s; **247 × `503`** de 04:12:27 a 04:12:43 (~16 s, com o Circuit Breaker) |
+
+No E3, diferente do `Recreate`, o ReplicaSet criou o Pod substituto **no mesmo instante** do despejo (04:12:22): a
+queda foi o tempo até o novo ficar pronto, somado à recuperação do Circuit Breaker. O drain também esperou as PDBs do
+`kube-system` (CoreDNS, metrics-server), que retentaram até ter réplicas suficientes.
 
 ## 8. Explicação técnica
 
@@ -330,6 +373,14 @@ flowchart LR
   e usa 1 Pod a mais de capacidade, mas nunca reduz quem atende. Com `0/100%`, não precisa de capacidade extra, mas
   derruba tudo de uma vez. A "pronto" vem das probes do LAB 02: sem readiness correta, `maxUnavailable: 0` não
   protege nada.
+- **Por que a estratégia agressiva não gerou erros na B1.** Os Pods em terminação continuam atendendo durante o
+  graceful shutdown (5 s), e o kube-proxy, quando um Service fica sem endpoints prontos, ainda envia tráfego aos
+  endpoints em terminação que seguem servindo. Como a Orders sobe em ~3 s, as novas réplicas ficam prontas antes de as
+  antigas pararem. O risco aparece quando a aplicação para no `SIGTERM` (B2) ou demora a subir: aí a janela sem
+  ninguém atendendo vira erro. `1/0` não depende dessas condições — por isso é o padrão seguro.
+- **O Circuit Breaker estende a indisponibilidade (parte C).** A Inventory ficou ~5 s fora, mas a BFF respondeu `503`
+  por ~15 s: o Circuit Breaker da Orders abriu e só testa a dependência de novo após o `recovery_timeout` (LAB 07).
+  Ele protege a dependência e corta latência, ao custo de alguns segundos de erro a mais depois da volta.
 - **`Recreate` existe para quando duas versões não podem coexistir.** A Inventory guarda o estoque em memória numa
   réplica única: duas réplicas teriam estoques diferentes. O preço é a janela de indisponibilidade em **todo**
   rollout. A correção de verdade (fase 2) é tirar o estado do Pod (ex.: DynamoDB) e então usar `RollingUpdate` com
@@ -341,6 +392,8 @@ flowchart LR
 - **`maxUnavailable` em vez de `minAvailable`.** Com HPA (Orders entre 2 e 12), `maxUnavailable: 1` é válido em
   toda a faixa. Um `minAvailable: 2` fixo, com 2 réplicas, daria `ALLOWED 0` e travaria todo drain — o mesmo efeito
   do patch da parte D, que é o erro clássico de "PDB que impede manutenção".
+- **Drain × `Recreate`.** No `Recreate`, o Pod novo só é criado depois de o antigo encerrar. No drain (evicção), o
+  ReplicaSet cria o substituto **no mesmo instante** em outro nó — a queda é só o tempo até ele ficar pronto.
 - **PDB com 1 réplica não protege.** Com `maxUnavailable: 1` a única réplica pode sair; com `maxUnavailable: 0` ela
   nunca sai e o drain do nó trava. Não há valor certo: disponibilidade exige 2+ réplicas.
 - **Drain + topology spread.** O drain usa as mesmas regras de agendamento: os Pods despejados vão para o outro nó
@@ -370,9 +423,9 @@ scripts/fault.sh orders cb                                                      
 
 | Cenário | Ação | Comportamento esperado | Como verificar |
 |---|---|---|---|
-| Rollout seguro | `rollout restart` com `1/0` | 0 erros, nunca menos de 2 Pods prontos | `count-responses.sh` só `201` |
-| Rollout agressivo | `rollout restart` com `0/100%` | janela sem endpoints, `503` | `count-responses.sh` com `503` |
-| Recreate | `rollout restart` da Inventory | janela sem Inventory, `503`, estoque reiniciado | `count-responses.sh`; `fault.sh inventory state` |
+| Rollout seguro | `rollout restart` com `1/0` | 0 erros (medido: 252 × `201`, rollout em 7 s) | `count-responses.sh` só `201` |
+| Rollout agressivo | `rollout restart` com `0/100%` | com graceful shutdown: 0 erros; sem (`SHUTDOWN_DELAY_SECONDS=0`): 21–27 `503`/`504` por rollout | `count-responses.sh` |
+| Recreate | `rollout restart` da Inventory | ~5 s sem Inventory, ~15 s de `503` (Circuit Breaker), estoque reiniciado | `count-responses.sh`; `fault.sh orders cb`; `fault.sh inventory state` |
 | PDB bloqueia | drain com `maxUnavailable: 0` | `Cannot evict pod …` até o timeout | saída do drain |
 | PDB libera | drain com `maxUnavailable: 1` | drain conclui, 0 erros | saída do drain; `count-responses.sh` |
 | Fora da PDB | `delete pod`, rollout, drain da Inventory | ignoram a PDB / a única réplica sai | terminal 1; `count-responses.sh` |
@@ -392,7 +445,7 @@ scripts/fault.sh orders cb                                                      
 ## 12. Critérios de sucesso
 
 - [ ] A: rollout com `1/0` sem erros na BFF.
-- [ ] B: você viu a janela sem réplicas prontas e os `503` do rollout agressivo.
+- [ ] B: você viu que o rollout agressivo só gera erros sem graceful shutdown (B1 × B2) e explica por quê.
 - [ ] C: você explica por que a Inventory é `Recreate` e o que se perde em cada rollout.
 - [ ] D: o drain travou com a PDB em 0 e concluiu com a PDB em 1.
 - [ ] E: você sabe listar o que a PDB **não** protege.
