@@ -15,21 +15,21 @@ Todos os laboratórios seguem o mesmo ciclo:
 | `bash`, `python3`, `curl` | scripts do workshop |
 | Navegador | HyperDX (UI do ClickStack) |
 
-**Turma com um ambiente por aluno.** O instrutor envia o seu `STUDENT_ID` (ex.: `aluno07`) e um bloco para o
+**Turma com um ambiente por aluno.** O instrutor envia o seu `CLUSTER_ID` (ex.: `aluno07`) e um bloco para o
 `~/.aws/config`. Você entra pelo SSO e assume a **sua** role, que só enxerga o seu cluster `rw-<id>`, a sua tabela
 `rw-<id>-orders` e as suas credenciais do HyperDX:
 
 ```bash
 aws sso login --profile workshop-sso
-export AWS_PROFILE=workshop STUDENT_ID=aluno07       # use o seu ID
+export AWS_PROFILE=workshop CLUSTER_ID=aluno07       # use o seu ID
 aws sts get-caller-identity                          # assumed-role/rw-aluno07-student/...
-aws eks update-kubeconfig --name rw-$STUDENT_ID --region us-east-1
+aws eks update-kubeconfig --name rw-$CLUSTER_ID --region us-east-1
 make hyperdx-credentials-pull                        # login do HyperDX do seu ambiente
 kubectl get nodes -L workload                        # nós "apps" e "observability"
 kubectl -n ecommerce get pods                        # bff-api, orders-api, inventory-api
 ```
 
-Com `STUDENT_ID` exportado, os scripts e o `make` usam automaticamente os seus nomes (`CLUSTER_NAME=rw-<id>`,
+Com `CLUSTER_ID` exportado, os scripts e o `make` usam automaticamente os seus nomes (`CLUSTER_NAME=rw-<id>`,
 `TABLE_NAME=rw-<id>-orders`, role `rw-<id>-orders-api`); sem ele, os scripts param pedindo o ID. Os nomes
 derivados estão em `scripts/lib/common.sh`.
 

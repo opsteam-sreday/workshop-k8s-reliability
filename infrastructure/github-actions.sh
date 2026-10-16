@@ -44,7 +44,7 @@ PIPELINE_CLUSTERS=('rw-*')
 render_pipeline_policy() {
   local dir c i=0; dir="$(mktemp -d)"
   for c in "${PIPELINE_CLUSTERS[@]}"; do
-    env -u STUDENT_ID -u TABLE_NAME -u ORDERS_ROLE_NAME -u ORDERS_POLICY_NAME -u STUDENT_ROLE_NAME CLUSTER_NAME="$c" \
+    env -u CLUSTER_ID -u STUDENT_ID -u TABLE_NAME -u ORDERS_ROLE_NAME -u ORDERS_POLICY_NAME -u STUDENT_ROLE_NAME CLUSTER_NAME="$c" \
       bash -c 'source "$1/scripts/lib/common.sh"; render "$1/infrastructure/github-actions/pipeline-policy.json"' _ "$REPO_ROOT" \
       > "$dir/$i.json"
     i=$((i + 1))

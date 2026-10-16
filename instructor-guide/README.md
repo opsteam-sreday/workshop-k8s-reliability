@@ -80,15 +80,15 @@ ambiente completo `rw-<id>` com isolamento próprio:
    - **Local:** `make fleet-up ASSUME_YES=true`. Estado e logs por aluno em `.workshop/fleet/rw-<id>/`.
 4. `make fleet-status` — todos `ACTIVE` e validação sem falhas. Se a role SSO ainda não existia no passo 3:
    `make fleet-access`.
-5. Envie a cada aluno o resultado de `make fleet-profile STUDENT_ID=<id>` (bloco do `~/.aws/config`).
+5. Envie a cada aluno o resultado de `make fleet-profile CLUSTER_ID=<id>` (bloco do `~/.aws/config`).
 
 **Um aluno com problema** (ambiente falhou, aluno novo, recriar do zero):
 
 - Actions: *Re-run failed jobs* no run do `fleet-up` (refaz só os que falharam) ou *workshop-up* com o
-  `student_id`/`student_username` dele.
-- Local: `make student-up STUDENT_ID=aluno07` — mesmo fluxo de um aluno do `fleet-up`, em primeiro plano, com o
+  `cluster_id`/`student_username` dele.
+- Local: `make student-up CLUSTER_ID=aluno07` — mesmo fluxo de um aluno do `fleet-up`, em primeiro plano, com o
   username do roster; as etapas são idempotentes (o que já existe é mantido). Log em `.workshop/fleet/rw-aluno07/up.log`.
-- Para recriar do zero: `make student-down STUDENT_ID=aluno07 ASSUME_YES=true` e depois `make student-up …`.
+- Para recriar do zero: `make student-down CLUSTER_ID=aluno07 ASSUME_YES=true` e depois `make student-up …`.
 
 **Depois do evento:** `make fleet-down ASSUME_YES=true` (as imagens ECR ficam; `DELETE_IMAGES=true` remove) e,
 na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastructure/students.csv`.

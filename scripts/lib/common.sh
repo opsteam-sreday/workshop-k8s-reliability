@@ -7,16 +7,21 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
 
 export AWS_REGION="${AWS_REGION:-us-east-1}"
-# Um cluster por aluno (mesma conta), inclusive o instrutor (ex.: aluno01): STUDENT_ID=aluno01 => cluster
+# Um cluster por aluno (mesma conta), inclusive o instrutor (ex.: aluno01): CLUSTER_ID=aluno01 => cluster
 # rw-aluno01 e TODOS os recursos com esse prefixo (tabela, role/policy da Orders API, role do aluno, secret do
 # HyperDX). Ver scripts/fleet.sh. Scripts que não operam um cluster (imagens, locks, pipeline, Identity Center)
 # definem WORKSHOP_NO_CLUSTER=true antes de carregar este arquivo.
+# Compatibilidade: STUDENT_ID é o nome antigo de CLUSTER_ID.
 if [[ -n "${STUDENT_ID:-}" ]]; then
-  [[ "$STUDENT_ID" =~ ^[a-z0-9]{1,16}$ ]] || { echo "STUDENT_ID inválido: '$STUDENT_ID' (use [a-z0-9], até 16)" >&2; exit 1; }
-  export CLUSTER_NAME="${CLUSTER_NAME:-rw-${STUDENT_ID}}"
+  echo "⚠ STUDENT_ID está obsoleto: use CLUSTER_ID (ex.: export CLUSTER_ID=${STUDENT_ID})" >&2
+  export CLUSTER_ID="${CLUSTER_ID:-$STUDENT_ID}"
+fi
+if [[ -n "${CLUSTER_ID:-}" ]]; then
+  [[ "$CLUSTER_ID" =~ ^[a-z0-9]{1,16}$ ]] || { echo "CLUSTER_ID inválido: '$CLUSTER_ID' (use [a-z0-9], até 16)" >&2; exit 1; }
+  export CLUSTER_NAME="${CLUSTER_NAME:-rw-${CLUSTER_ID}}"
 fi
 if [[ -z "${CLUSTER_NAME:-}" && "${WORKSHOP_NO_CLUSTER:-false}" != true ]]; then
-  echo "Defina STUDENT_ID (ex.: export STUDENT_ID=aluno01 => cluster rw-aluno01; o instrutor usa o dele)" >&2; exit 1
+  echo "Defina CLUSTER_ID (ex.: export CLUSTER_ID=aluno01 => cluster rw-aluno01; o instrutor usa o dele)" >&2; exit 1
 fi
 export CLUSTER_NAME="${CLUSTER_NAME:-}"
 export K8S_VERSION="${K8S_VERSION:-1.36}"

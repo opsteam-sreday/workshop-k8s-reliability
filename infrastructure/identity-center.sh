@@ -7,7 +7,7 @@
 # aluno assume é a trust policy de cada role (infrastructure/student-access.sh, condição aws:userid).
 #
 # Uso: WORKSHOP_ACCOUNT_ID=<conta> infrastructure/identity-center.sh apply|remove <roster.csv>
-#   roster.csv: student_id,username,email,given_name,family_name  (ver infrastructure/students.example.csv)
+#   roster.csv: cluster_id,username,email,given_name,family_name  (ver infrastructure/students.example.csv)
 #   CREATE_USERS=false  não cria usuários (diretório externo/SCIM: os usuários já devem existir)
 export WORKSHOP_NO_CLUSTER=true   # não opera um cluster
 source "$(dirname "$0")/../scripts/lib/common.sh"
@@ -75,7 +75,7 @@ case "$cmd" in
     ok "Inline policy: sts:AssumeRole em arn:aws:iam::${WORKSHOP_ACCOUNT_ID}:role/rw-*-student"
 
     while IFS=, read -r sid username email given family; do
-      [[ "$sid" == student_id || -z "$sid" || "$sid" == \#* ]] && continue
+      [[ "$sid" == cluster_id || "$sid" == student_id || -z "$sid" || "$sid" == \#* ]] && continue
       uid="$(user_id "$username")"
       if [[ -z "$uid" || "$uid" == None ]]; then
         [[ "$CREATE_USERS" == true ]] || { warn "$sid: usuário $username não existe (CREATE_USERS=false) — ignorado"; continue; }
@@ -100,7 +100,7 @@ case "$cmd" in
   remove)
     [[ -n "$PS_ARN" ]] || { ok "Permission set $STUDENT_PERMISSION_SET não existe"; exit 0; }
     while IFS=, read -r sid username _; do
-      [[ "$sid" == student_id || -z "$sid" || "$sid" == \#* ]] && continue
+      [[ "$sid" == cluster_id || "$sid" == student_id || -z "$sid" || "$sid" == \#* ]] && continue
       uid="$(user_id "$username")"; [[ -n "$uid" && "$uid" != None ]] || continue
       req="$(aws sso-admin delete-account-assignment --instance-arn "$INSTANCE_ARN" --region "$AWS_REGION" \
         --permission-set-arn "$PS_ARN" --target-type AWS_ACCOUNT --target-id "$WORKSHOP_ACCOUNT_ID" \

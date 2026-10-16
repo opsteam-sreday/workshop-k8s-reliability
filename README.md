@@ -128,7 +128,7 @@ Ou diretamente pelos scripts:
 git clone <este-repo> && cd eks-reliability-workshop
 aws sts get-caller-identity                 # confirme conta e região
 export AWS_REGION=us-east-1                  # opcional (padrão us-east-1)
-export STUDENT_ID=aluno01                    # obrigatório: cluster rw-aluno01 (o instrutor usa o dele)
+export CLUSTER_ID=aluno01                    # obrigatório: cluster rw-aluno01 (o instrutor usa o dele)
 
 scripts/setup.sh      # ≈ 35–45 min: EKS, add-ons, DynamoDB, Pod Identity, CA, ClickStack, OTel, alertas
 scripts/deploy.sh     # build multi-arch + push ECR (só o que mudou) + deploy das 3 APIs + HPA
@@ -214,14 +214,14 @@ Três workflows executam os mesmos scripts do Quick start em um runner descartá
 | Workflow | Equivale a | Entradas |
 |---|---|---|
 | `images` | `scripts/images.sh all` — um job por app, passo a passo: tag → lock → testes → build amd64 → build arm64 → índice multi-arch. Roda em push na `main` que mexa em `apps/**`, manualmente ou chamado pelo `workshop-up` | região |
-| `workshop-up` | `make up` (chama `images`, depois setup + deploy + validate) | região, `student_id` (obrigatório; o instrutor usa o dele), `student_username`, validate on/off |
-| `workshop-down` | `make teardown` | região, `student_id`, `confirm` = `rw-<student_id>` |
+| `workshop-up` | `make up` (chama `images`, depois setup + deploy + validate) | região, `cluster_id` (obrigatório; o instrutor usa o dele), `student_username`, validate on/off |
+| `workshop-down` | `make teardown` | região, `cluster_id`, `confirm` = `rw-<cluster_id>` |
 | `fleet-up` | `make fleet-up`: build único + um `workshop-up` por aluno em paralelo (matrix) | `students` (`id:username …`), região, `max_parallel`, validate on/off |
 
 `workshop-up` e `workshop-down` usam o mesmo grupo de `concurrency` por cluster (nunca rodam up e down ao mesmo tempo).
 
-**Um ambiente por aluno:** com `student_id=aluno07`, o workflow cria o cluster `rw-aluno07` com os nomes derivados dele
-(tabela, roles, secret, VPC `10.207.0.0/16`), igual a `STUDENT_ID=aluno07 make up`. Com `student_username`, também cria
+**Um ambiente por aluno:** com `cluster_id=aluno07`, o workflow cria o cluster `rw-aluno07` com os nomes derivados dele
+(tabela, roles, secret, VPC `10.207.0.0/16`), igual a `CLUSTER_ID=aluno07 make up`. Com `student_username`, também cria
 a role exclusiva do aluno + access entry (`infrastructure/student-access.sh`; exige o permission set já atribuído à
 conta: `make identity-center`). Execuções de alunos diferentes rodam em paralelo. A role do pipeline cobre só os
 ambientes `rw-*` (o instrutor usa um deles, ex.: `aluno01`); rode `make gha-role` após atualizar este repositório.

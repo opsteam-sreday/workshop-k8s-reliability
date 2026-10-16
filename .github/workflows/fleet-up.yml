@@ -1,6 +1,6 @@
 # Turma inteira: build único das imagens + um workshop-up por aluno, em paralelo (equivale a `make fleet-up`).
 # Cada aluno vira um job da matrix (log próprio; falhou? "Re-run failed jobs" refaz só ele). Um aluno só:
-# workshop-up (Actions) ou `make student-up STUDENT_ID=<id>` (local).
+# workshop-up (Actions) ou `make student-up CLUSTER_ID=<id>` (local).
 # Antes: `make fleet-quotas` (VPCs, EIPs, NAT por AZ, vCPU, clusters) e `make identity-center` (usuários SSO).
 name: fleet-up
 
@@ -54,7 +54,7 @@ jobs:
                   errors.append(f"username inválido para {sid}: {username!r}")
               else:
                   seen.add(sid)
-                  rows.append({"student_id": sid, "username": username})
+                  rows.append({"cluster_id": sid, "username": username})
           if errors or not rows:
               print("\n".join(f"::error::{e}" for e in errors or ["nenhum aluno informado"]))
               sys.exit(1)
@@ -62,7 +62,7 @@ jobs:
               out.write(f"matrix={json.dumps(rows)}\n")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
               summary.write(f"## Turma: {len(rows)} ambientes\n\n| Aluno | Cluster | Username |\n|---|---|---|\n")
-              summary.writelines(f"| {r['student_id']} | rw-{r['student_id']} | {r['username'] or '—'} |\n" for r in rows)
+              summary.writelines(f"| {r['cluster_id']} | rw-{r['cluster_id']} | {r['username'] or '—'} |\n" for r in rows)
           PY
 
   images:
@@ -73,7 +73,7 @@ jobs:
       aws_region: ${{ inputs.aws_region }}
 
   student:
-    name: 3. rw-${{ matrix.student_id }}
+    name: 3. rw-${{ matrix.cluster_id }}
     needs: [plan, images]
     strategy:
       fail-fast: false            # um aluno com falha não interrompe os outros
@@ -83,7 +83,7 @@ jobs:
     uses: ./.github/workflows/workshop-up.yml
     with:
       aws_region: ${{ inputs.aws_region }}
-      student_id: ${{ matrix.student_id }}
+      cluster_id: ${{ matrix.cluster_id }}
       student_username: ${{ matrix.username }}
       validate: ${{ inputs.validate }}
       skip_images: true

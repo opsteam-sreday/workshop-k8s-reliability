@@ -1,3 +1,3 @@
-student_id,username,email,given_name,family_name
+cluster_id,username,email,given_name,family_name
 aluno01,aluno01@example.com,aluno01@example.com,Aluno,Um
 aluno02,aluno02@example.com,aluno02@example.com,Aluno,Dois

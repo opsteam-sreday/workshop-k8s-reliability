@@ -2,7 +2,7 @@
 
 > **Break it → Observe it → Understand it → Fix it → Validate it**
 >
-> Duração estimada: 45–60 min (sem contar os ~25 min de `setup.sh`, que o instrutor pode executar antes).
+> Duração estimada: ~35 min até a 5.10 (roteiro do lab) + 15–25 min opcionais (seções 6–12). Não inclui os ~25 min de `setup.sh`, que o instrutor pode executar antes.
 
 ---
 
@@ -30,13 +30,13 @@ E precisamos provar que ele funciona **mesmo quando o cliente repete a requisiç
 | `kubectl`, `eksctl`, `helm`, `docker` (com `buildx`), `python3`, `perl` | Scripts do workshop |
 | `uuidgen`, `curl`, `jq` | Comandos deste lab |
 
-Variáveis do seu ambiente (os demais nomes derivam do `STUDENT_ID` — ver `scripts/lib/common.sh`):
+Variáveis do seu ambiente (os demais nomes derivam do `CLUSTER_ID` — ver `scripts/lib/common.sh`):
 
 ```bash
 export AWS_REGION=us-east-1
-export STUDENT_ID=aluno07                 # use o seu ID
-export CLUSTER_NAME=rw-$STUDENT_ID
-export TABLE_NAME=rw-$STUDENT_ID-orders
+export CLUSTER_ID=aluno07                 # use o seu ID
+export CLUSTER_NAME=rw-$CLUSTER_ID
+export TABLE_NAME=rw-$CLUSTER_ID-orders
 ```
 
 ## 4. Estado inicial
@@ -240,6 +240,18 @@ scripts/k6.sh idempotency-concurrency.js
 ```
 
 20 VUs enviam simultaneamente a **mesma** chave. Esperado: checks 100%, `idempotency_violations: 0`, `idempotency_in_progress` ≈ 19, e no teardown `pedidos persistidos=1` + replay final `201` com `Idempotency-Replayed=true`.
+
+---
+
+> ### ✋ Fim do roteiro do LAB 01
+>
+> **Não é necessário seguir as seções 6 a 12.** Elas aprofundam o mesmo tema (timeout da BFF depois que a Orders já
+> criou o pedido, e a recuperação pelo retry com a mesma chave) e ficam como **material opcional**, para quem terminar
+> antes ou quiser estudar depois.
+>
+> Se parar aqui, faça apenas a **[13. Reset](#13-reset)** antes do próximo lab.
+
+---
 
 ## 6. Falha provocada
 

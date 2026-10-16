@@ -7,8 +7,8 @@
 # daquele usuário consegue assumi-la. A permission policy (infrastructure/student/student-policy.json)
 # limita o acesso AWS ao cluster, à tabela e ao secret do HyperDX do próprio aluno.
 #
-# Uso: STUDENT_ID=aluno01 STUDENT_USERNAME=<username no Identity Center> infrastructure/student-access.sh create
-#      STUDENT_ID=aluno01 infrastructure/student-access.sh delete|status
+# Uso: CLUSTER_ID=aluno01 STUDENT_USERNAME=<username no Identity Center> infrastructure/student-access.sh create
+#      CLUSTER_ID=aluno01 infrastructure/student-access.sh delete|status
 source "$(dirname "$0")/../scripts/lib/common.sh"
 require aws python3
 account_id >/dev/null

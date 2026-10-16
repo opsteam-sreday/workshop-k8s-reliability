@@ -48,8 +48,8 @@ mostra a regra em ação: quando ela bloqueia, quando ela não ajuda e por que e
 ## 3. Pré-requisitos
 
 - LAB 01 concluído; `scripts/reset.sh` executado.
-- `export STUDENT_ID=<seu id>` (ex.: `aluno07`) e kubectl apontando para o seu cluster.
-- **4 terminais** abertos na raiz do repositório (todos com o mesmo `STUDENT_ID`).
+- `export CLUSTER_ID=<seu id>` (ex.: `aluno07`) e kubectl apontando para o seu cluster.
+- **4 terminais** abertos na raiz do repositório (todos com o mesmo `CLUSTER_ID`).
 
 ## 4. Estado inicial
 

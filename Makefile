@@ -6,7 +6,7 @@
 #   make lab02-start     inicia um passo específico de um laboratório
 #
 # Variáveis (sobrescreva na linha de comando):
-#   make setup STUDENT_ID=aluno01 AWS_REGION=us-west-2
+#   make setup CLUSTER_ID=aluno01 AWS_REGION=us-west-2
 #   make k6-stress RATE=80 DURATION=8m
 # Compatível com GNU Make 3.81 (padrão do macOS).
 # =============================================================================
@@ -14,9 +14,9 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 export AWS_REGION   ?= us-east-1
-# STUDENT_ID=aluno01 => cluster rw-aluno01 e recursos com esse prefixo (turma: scripts/fleet.sh)
-export STUDENT_ID   ?=
-export CLUSTER_NAME ?= $(if $(STUDENT_ID),rw-$(STUDENT_ID))
+# CLUSTER_ID=aluno01 => cluster rw-aluno01 e recursos com esse prefixo (turma: scripts/fleet.sh)
+export CLUSTER_ID   ?= $(STUDENT_ID)   # STUDENT_ID: nome antigo, ainda aceito
+export CLUSTER_NAME ?= $(if $(CLUSTER_ID),rw-$(CLUSTER_ID))
 # true = DOCKER_CONFIG temporário sem credsStore (evita travas do credential helper do Docker Desktop)
 export DOCKER_ISOLATED_CONFIG ?= true
 # ASSUME_YES=true pula as confirmações interativas de setup/teardown
@@ -141,14 +141,14 @@ fleet-status: ## Estado do cluster e da validação de cada aluno
 fleet-down: ## Remove os ambientes da turma (DELETE_IMAGES=true remove as imagens)
 	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh down $(ROSTER)
 
-student-up: ## Um aluno do roster: imagens + setup/deploy/acesso/validação, em primeiro plano (STUDENT_ID=aluno07)
-	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh up-one $(ROSTER) $(STUDENT_ID)
+student-up: ## Um aluno do roster: imagens + setup/deploy/acesso/validação, em primeiro plano (CLUSTER_ID=aluno07)
+	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh up-one $(ROSTER) $(CLUSTER_ID)
 
-student-down: ## Remove o ambiente de um aluno do roster (STUDENT_ID=aluno07)
-	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh down-one $(ROSTER) $(STUDENT_ID)
+student-down: ## Remove o ambiente de um aluno do roster (CLUSTER_ID=aluno07)
+	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh down-one $(ROSTER) $(CLUSTER_ID)
 
-fleet-profile: ## ~/.aws/config de um aluno (STUDENT_ID=aluno01)
-	@scripts/fleet.sh profile $(ROSTER) $(STUDENT_ID)
+fleet-profile: ## ~/.aws/config de um aluno (CLUSTER_ID=aluno01)
+	@scripts/fleet.sh profile $(ROSTER) $(CLUSTER_ID)
 
 ##@ GitHub Actions (.github/workflows/workshop-up.yml e workshop-down.yml)
 .PHONY: gha-role gha-role-delete access-entry hyperdx-credentials-pull hyperdx-credentials-push
