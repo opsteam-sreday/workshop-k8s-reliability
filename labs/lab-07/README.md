@@ -131,6 +131,19 @@ sequenceDiagram
     Note over O: +15 s → HALF_OPEN: 2 chamadas de teste estouram → OPEN de novo
 ```
 
+> **💡 O que você deveria ter notado (5.1)**
+>
+> - Antes de abrir, cada pedido levou **~1,5–2 s** e voltou `503` com `reason=timeout`: 3 tentativas de 500 ms com
+>   backoff, dentro do orçamento de 2 s.
+> - Após **5 falhas consecutivas** a réplica foi para `OPEN` e os pedidos passaram a falhar **em ms** com
+>   `reason=circuit_open` (fail fast, sem chamar a Inventory).
+> - Cada réplica abriu em um momento diferente: o estado é **local ao Pod**.
+> - **15 s** depois veio `HALF_OPEN`; com a latência ainda ativa, as chamadas de teste estouraram e o circuito voltou a
+>   `OPEN`.
+>
+> **Lição:** o Circuit Breaker não conserta a dependência — ele troca espera longa por falha rápida e alivia quem já
+> está doente.
+
 ### 5.2 Recuperação
 
 ```bash
@@ -138,6 +151,17 @@ scripts/fault.sh inventory reset
 ```
 
 Em até ~15 s cada réplica vai a `HALF_OPEN`, as 2 chamadas de teste têm sucesso e o estado volta a `CLOSED`.
+
+> **💡 O que você deveria ter notado (5.2)**
+>
+> - Em até **~15 s** cada réplica foi para `HALF_OPEN`, as **2** chamadas de teste tiveram sucesso e o estado voltou a
+>   `CLOSED` (`consecutive_failures: 0`).
+> - Até lá, os pedidos continuaram falhando **mesmo com a Inventory saudável**: no LAB 03 (parte C) a Inventory ficou
+>   ~5 s fora, mas a BFF respondeu `503` por ~15 s por causa do `recovery_timeout`.
+> - Uma réplica sem tráfego pode ficar em `OPEN`/`HALF_OPEN`: a transição só acontece quando chega uma chamada.
+>
+> **Lição:** a recuperação tem custo — o `recovery_timeout` define quanto erro a mais o cliente vê depois que a
+> dependência volta.
 
 ### 5.3 HTTP 503
 
@@ -149,6 +173,15 @@ scripts/fault.sh inventory reset
 
 Com 503 o fluxo é o mesmo da 5.1, mas **sem esperar timeout**: cada tentativa falha na hora, então o circuito abre
 mais rápido e o pedido falha em poucos ms já antes do `OPEN`.
+
+> **💡 O que você deveria ter notado (5.3)**
+>
+> - Sem esperar timeout, cada tentativa falhou na hora: o circuito abriu **mais rápido** que na 5.1.
+> - Os pedidos voltaram `503 DEPENDENCY_UNAVAILABLE` em poucos ms, primeiro pela falha da Inventory e depois com
+>   `reason=circuit_open`.
+>
+> **Lição:** `503`, timeout e erro de conexão contam igual para o Circuit Breaker; o que muda é quanto tempo o cliente
+> espera até ele abrir.
 
 ### 5.4 Bulkhead (limite de concorrência)
 
@@ -162,6 +195,17 @@ Com 10 chamadas simultâneas por réplica e ~0,4 s por chamada, cada réplica co
 chamadas excedentes falham em 100 ms com `reason=bulkhead_full` — sem fila ilimitada, e **sem** contar como falha
 do Circuit Breaker. A própria Inventory também limita concorrência (`INVENTORY_MAX_CONCURRENT_REQUESTS=10` →
 `503 TOO_MANY_CONCURRENT_REQUESTS`), e isso conta como falha.
+
+> **💡 O que você deveria ter notado (5.4)**
+>
+> - Acima de ~25 reservas/s por réplica (10 simultâneas × ~0,4 s), as chamadas excedentes falharam em **100 ms** com
+>   `reason=bulkhead_full` — sem fila ilimitada.
+> - Com o bulkhead cheio, o Circuit Breaker **continuou `CLOSED`**: a dependência não está doente, a réplica é que
+>   está no limite.
+> - Já o `503 TOO_MANY_CONCURRENT_REQUESTS` da própria Inventory **conta** como falha e pode abrir o circuito.
+>
+> **Lição:** o bulkhead protege a **réplica** (limita quanto ela espera pela dependência); o Circuit Breaker protege a
+> **dependência** — e um não deve disparar o outro.
 
 ### 5.5 Resposta lenta APÓS aplicar o efeito (resultado desconhecido)
 
@@ -217,6 +261,17 @@ sequenceDiagram
     O->>D: pedido CONFIRMED, registro COMPLETED
     O-->>C: 201
 ```
+
+> **💡 O que você deveria ter notado (5.5)**
+>
+> - O primeiro `POST` voltou `503 … "reason":"timeout"`, mas a reserva **foi aplicada** (`reservations_total +1`).
+> - O registro de idempotência ficou `IN_PROGRESS` com `reservation_state=UNKNOWN`: a Orders **não** compensou "às
+>   cegas", porque não sabe se a reserva aconteceu.
+> - O retry com a **mesma** `Idempotency-Key` voltou `201`, a Inventory respondeu `REPLAYED` e o estoque **não** foi
+>   decrementado de novo.
+>
+> **Lição:** timeout de leitura é resultado **desconhecido**, não falha; idempotência (mesmo `reservation_id` + fencing
+> token) é o que torna o retry seguro.
 
 | Cenário | Ação | Comportamento esperado | Como verificar |
 |---|---|---|---|

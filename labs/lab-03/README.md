@@ -134,6 +134,14 @@ sequenceDiagram
     Note over N,S: sempre houve pelo menos 2 réplicas prontas
 ```
 
+> **💡 O que você deveria ter notado (A)**
+>
+> - O rollout das 2 réplicas da Orders levou **~7 s**, um Pod novo por vez.
+> - Nunca houve menos de 2 réplicas prontas: o novo ficou pronto **antes** de um antigo sair.
+> - A BFF teve **0 erros** (252 × `201`).
+>
+> **Lição:** com `maxSurge: 1, maxUnavailable: 0`, o rollout troca réplicas sem nunca reduzir quem atende.
+
 ### Parte B — RollingUpdate agressivo (`maxSurge: 0, maxUnavailable: 100%`)
 
 A estratégia não faz parte do template dos Pods: trocá-la não reinicia nada. O `rollout restart` dispara a troca.
@@ -192,6 +200,16 @@ sequenceDiagram
     end
 ```
 
+> **💡 O que você deveria ter notado (B)**
+>
+> - **B1:** os 2 Pods antigos entraram em terminação juntos e os 2 novos foram criados no mesmo segundo; os novos
+>   ficaram prontos em ~3–5 s e os antigos só encerraram depois. A BFF teve **0 erros** (237 × `201`).
+> - **B2:** sem graceful shutdown (`SHUTDOWN_DELAY_SECONDS=0`), o mesmo rollout agressivo deu **21–27 erros** por
+>   rollout (`503` + `504`); a contraprova com a estratégia segura deu só **2–3**.
+>
+> **Lição:** a estratégia agressiva só "funciona" enquanto o graceful shutdown cobre o startup; `1/0` é segura sem
+> depender disso.
+
 ### Parte C — `Recreate` na Inventory
 
 ```bash
@@ -213,6 +231,15 @@ flowchart LR
     F --> G["pronto: estoque reiniciado<br/>(estado em memória perdido)"]
     G --> H["pedidos voltam a 201<br/>(CB: HALF_OPEN -> CLOSED)"]
 ```
+
+> **💡 O que você deveria ter notado (C)**
+>
+> - O Pod antigo da Inventory encerrou (5 s de graceful shutdown) e **só então** o novo foi criado: ~5 s sem Inventory.
+> - O Circuit Breaker da Orders foi para `OPEN` nas 2 réplicas.
+> - A BFF devolveu `503` por **~15 s** (218 respostas): bem mais que a queda real, por causa do `recovery_timeout`.
+> - O estoque voltou ao catálogo inicial (estado em memória perdido).
+>
+> **Lição:** `Recreate` com réplica única tem janela de indisponibilidade em todo rollout, e o Circuit Breaker a estende.
 
 ### Parte D — PDB bloqueando um drain
 
@@ -256,6 +283,15 @@ flowchart TD
     F --> G["ReplicaSet recria no outro nó<br/>ALLOWED volta a 1 quando fica pronto"]
     G --> H["drain concluído"]
 ```
+
+> **💡 O que você deveria ter notado (D)**
+>
+> - Com a PDB em 0, o drain retentou **12 vezes** em 60 s (`Cannot evict pod as it would violate the pod's
+>   disruption budget`) e parou em `global timeout reached: 1m0s`.
+> - O nó ficou `Ready,SchedulingDisabled`: a BFF (PDB permite 1) e o CoreDNS saíram, a Orders ficou.
+> - Com a PDB em 1, o drain concluiu em **9 s** e a BFF teve **0 erros** (415 × `201`).
+>
+> **Lição:** a PDB controla o **ritmo** das evicções; `maxUnavailable: 0` trava toda manutenção do nó.
 
 ### Parte E — o que a PDB **não** protege
 
@@ -302,6 +338,16 @@ flowchart LR
         N4["réplica única: maxUnavailable 1<br/>libera a única réplica"]
     end
 ```
+
+> **💡 O que você deveria ter notado (E)**
+>
+> - **E1:** `kubectl delete pod` apagou o Pod mesmo com `ALLOWED DISRUPTIONS 0`; **0 erros** (311 × `201`).
+> - **E2:** o `rollout restart` concluiu normalmente com a PDB em 0; **0 erros** (250 × `201`).
+> - **E3:** a PDB da Inventory (`maxUnavailable: 1`) **liberou** a única réplica no drain: **247 × `503`** em ~16 s.
+>   O substituto foi criado no mesmo instante do despejo; a queda foi o tempo até ele ficar pronto mais o Circuit Breaker.
+>
+> **Lição:** a PDB só vale para evicções; não protege contra `delete`, rollout ou falha de nó, e com 1 réplica não
+> protege nada.
 
 ## 7. Observações
 

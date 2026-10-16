@@ -142,6 +142,14 @@ scripts/k6.sh inventory-errors.js RATE=4 DURATION=3m
 
 Gera: `POST /inventory/reservations` 503 (Inventory Creation Errors) e `POST /orders` 503 (Orders Creation Errors).
 
+> **💡 O que você deveria ter notado (5.1)**
+>
+> - **Uma** falha (reserva `503` na Inventory) acendeu **dois** alertas: *Inventory Creation Errors* e *Orders Creation
+>   Errors* — o mesmo problema contado em dois serviços.
+> - O precheck `GET /inventory/{sku}` continuou ok: só a rota de criação falhou.
+>
+> **Lição:** um alerta por serviço/rota multiplica o mesmo incidente; quem recebe precisa correlacionar sozinho.
+
 ### 5.2 Disparar o alerta de consulta da Orders
 
 ```bash
@@ -154,6 +162,13 @@ O `inventory-errors.js` também chama `GET /orders?customer_id=…` a cada itera
 threshold do k6 exige `http_req_failed < 5%` e vai **falhar** — é esperado: o objetivo aqui é gerar erros de
 consulta. (Alternativamente use `scripts/k6.sh get-orders.js` **antes** de injetar a falha: o `setup` cria pedidos.)
 
+> **💡 O que você deveria ter notado (5.2)**
+>
+> - Com `FAIL_READS`, o `GET /orders` passou a responder `503` e o alerta *Orders Query Errors* entrou em `ALERT`.
+> - O k6 terminou com o threshold `http_req_failed < 5%` **violado**: esperado, o objetivo era gerar erros.
+>
+> **Lição:** o alerta enxerga a falha de leitura, mas só como contagem de linhas de log — sem taxa nem denominador.
+
 ### 5.3 Disparar o alerta de consulta da Inventory
 
 ```bash
@@ -161,6 +176,14 @@ scripts/fault.sh orders reset
 scripts/fault.sh inventory http-503 QUERIES          # falha o precheck GET /inventory/{sku} da Orders
 scripts/k6.sh inventory-errors.js RATE=4 DURATION=3m
 ```
+
+> **💡 O que você deveria ter notado (5.3)**
+>
+> - O precheck `GET /inventory/{sku}` falhando acendeu *Inventory Query Errors*.
+> - Como o precheck falha **antes** da reserva, os pedidos também voltaram `503` — mas o alerta é de **consulta**:
+>   o nome do alerta não diz qual fluxo de negócio parou.
+>
+> **Lição:** alertas por rota técnica não descrevem o impacto no usuário (pedidos não criados).
 
 ### 5.4 Verificar os alertas e o webhook
 
@@ -176,6 +199,14 @@ Payload recebido (campos definidos em `WEBHOOK_BODY`): `alert`, `state` (`ALERT`
 das linhas), `alertId`.
 
 Na UI: **Alerts** → estado `ALERT`; clique no alerta → saved search com as linhas que foram contadas.
+
+> **💡 O que você deveria ter notado (5.4)**
+>
+> - Os quatro alertas em `ALERT` na UI e as notificações no `alert-webhook` (`ALERTA RECEBIDO` nos logs).
+> - No payload, `value` é a **contagem de logs na janela** (5 min), comparada ao `threshold` (≥ 5).
+> - O alerta só reage depois da avaliação (~1 min) sobre uma janela de 5 min: há atraso entre a falha e a notificação.
+>
+> **Lição:** o número que chega no alerta é "linhas de log", não "requisições com erro".
 
 ### 5.5 Medir o anti-pattern
 
@@ -217,6 +248,15 @@ Evidência da validação local do workshop:
 == (c) spans HTTP SERVER 5xx             orders-api  POST /orders    339
 ```
 
+> **💡 O que você deveria ter notado (5.5)**
+>
+> - **(a)** `COUNT(logs ERROR)` = **678**, mas **(b)** requisições distintas = **339** e **(c)** spans 5xx = **339**:
+>   (a) ≈ 2 × (b) = (c).
+> - Cada requisição que falha gera 2 logs ERROR (contextual + `HTTP request completed`): o alerta conta o **dobro**.
+> - (b), (c) e (d) concordam entre si: eles medem requisições, não linhas.
+>
+> **Lição:** `COUNT(logs)` **superestima** — e o fator muda quando alguém adiciona ou remove um `log.error`.
+
 ### 5.6 Falha SEM log ERROR
 
 O caso oposto — uma falha real que o alerta não vê:
@@ -254,6 +294,16 @@ desligadas. O único log é `FALHA INJETADA: encerrando o processo…` com níve
 Se o cliente repetir com a mesma `Idempotency-Key`, recebe `409 ORDER_IN_PROGRESS` até o lease (10 s) expirar e
 depois o pedido é recuperado (`orders.idempotency.recovery`), sem duplicar a reserva (aqui o k6 roda com
 `RETRY_ON_ERROR=false`, então esses registros ficam `IN_PROGRESS` — recuperáveis, conforme o contrato).
+
+> **💡 O que você deveria ter notado (5.6)**
+>
+> - `RESTARTS > 0` e `exit=137` nas réplicas da Orders: o processo morreu depois de reservar o estoque.
+> - Nenhum log `ERROR` nem `HTTP request completed` da Orders para essas requisições — só um `CRITICAL`
+>   (`level=FATAL`) "FALHA INJETADA: encerrando o processo…".
+> - A BFF respondeu `503` ("Orders API indisponível"), mas *Orders Creation Errors* **não contou**; a consulta
+>   **(e)** do `compare-counts.sh` ficou **> 0**.
+>
+> **Lição:** `COUNT(logs)` também **subestima**: a falha mais grave (crash) é justamente a que não deixa log ERROR.
 
 ## 6. Falha provocada
 
