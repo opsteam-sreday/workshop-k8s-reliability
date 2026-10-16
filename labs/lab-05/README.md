@@ -287,7 +287,7 @@ E observe (T2):
 kubectl get events -n ecommerce --sort-by=.lastTimestamp -w | grep -E "Preempted|FailedScheduling|Scheduled"
 # outro terminal:
 kubectl -n ecommerce get pods -o wide -w
-labs/lab-07/watch-cb.sh        # estado do Circuit Breaker por réplica da Orders
+labs/lab-05/watch-cb.sh        # estado do Circuit Breaker por réplica da Orders
 ```
 
 Sequência esperada da Parte B (2 nós `apps`, CA desligado, ballasts deixando 100m livres por nó):
@@ -317,7 +317,7 @@ sequenceDiagram
 | Orders +2 réplicas | B.6 | Evento `Preempted` na Inventory; uma Orders nova agendada no nó dela | `kubectl get events -n ecommerce --field-selector reason=Preempted` |
 | Vítima não reagenda | — | Inventory nova `Pending` (`Insufficient cpu`; nenhuma vítima de prioridade menor) | `kubectl -n ecommerce get pods -l app.kubernetes.io/name=inventory-api` |
 | Spread impede empilhar | — | 4ª Orders `Pending`: *"didn't match pod topology spread constraints … Preemption is not helpful"* | `kubectl -n ecommerce describe pod <orders Pending>` |
-| Impacto no negócio | k6 em T3 | `POST /orders` `201` → ~0%; `503 DEPENDENCY_UNAVAILABLE`; CB `OPEN` em cada réplica | saída do k6; `labs/lab-07/watch-cb.sh`; `circuit_breaker.state` = 2 no HyperDX |
+| Impacto no negócio | k6 em T3 | `POST /orders` `201` → ~0%; `503 DEPENDENCY_UNAVAILABLE`; CB `OPEN` em cada réplica | saída do k6; `labs/lab-05/watch-cb.sh`; `circuit_breaker.state` = 2 no HyperDX |
 
 > **💡 O que você deveria ter notado (Parte B)**
 >

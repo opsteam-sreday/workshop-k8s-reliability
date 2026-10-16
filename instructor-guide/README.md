@@ -4,7 +4,7 @@
 >
 > **Metodologia de todos os labs:** Break it → Observe it → Understand it → Fix it → Validate it.
 
-## 1. Agenda sugerida (6h00)
+## 1. Agenda sugerida (5h25)
 
 | Horário | Bloco | Duração |
 |---|---|---|
@@ -17,13 +17,12 @@
 | 3:30 | Intervalo | 10 min |
 | 3:40 | **LAB 05** — QoS & PriorityClass | 45 min |
 | 4:25 | **LAB 06** — CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | 45 min |
-| 5:10 | **LAB 07** — Circuit Breaker | 35 min |
-| 5:45 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
+| 5:10 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
 
 **Extra (fora da agenda):** [LAB X1 — ClickStack Alerting](../labs/.extras/lab-x1/README.md) (anti-pattern de alertas por
 contagem de logs, ~40 min). Use se sobrar tempo ou como material de estudo depois do evento.
 
-**Dica:** o scale-out de nós do LAB 06 leva de 2 a 4 minutos. Use esse tempo para discutir HPA × CA. Já o scale-down leva cerca de 4 minutos depois que a carga para (stabilization de 120 s + `scale-down-unneeded-time` de 2 min). Não espere por ele: siga para o LAB 07.
+**Dica:** o scale-out de nós do LAB 06 leva de 2 a 4 minutos. Use esse tempo para discutir HPA × CA. Já o scale-down leva cerca de 4 minutos depois que a carga para (stabilization de 120 s + `scale-down-unneeded-time` de 2 min). Não espere por ele: siga para a retrospectiva.
 
 **Modo de condução:**
 
@@ -174,20 +173,6 @@ na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastruct
   - Python com GIL: 1 processo usa no máximo 1 core. O limite de 1000m é o teto real por Pod.
   - Scale-down: `stabilizationWindowSeconds` evita *flapping*. O CA espera `scale-down-unneeded-time`.
 - **Lembrete:** o observability node group tem tamanho fixo (1) e taint. O CA e o k6 rodam lá e não competem com a carga.
-
-### LAB 07 — Circuit Breaker
-
-- **Break:** latência de 800 ms na reserva (timeout de 500 ms) e depois HTTP 503.
-- **Observe:**
-  - `labs/lab-07/watch-cb.sh`: CLOSED → OPEN → HALF_OPEN → OPEN/CLOSED.
-  - Respostas 503 com `reason=circuit_open` voltando em menos de 10 ms.
-  - Traces com eventos `retry` e `attempt.failed`.
-- **Pontos de discussão:**
-  - Sem o circuit breaker, cada requisição esperaria cerca de 3×500 ms + backoff, prendendo conexões e workers. O fail fast protege a Orders **e** a Inventory degradada.
-  - Retry amplification (exemplo hipotético): se cliente, BFF e Orders fizessem 3 tentativas cada, uma requisição poderia virar 3×3×3 = 27 chamadas à Inventory. Neste workshop só a Orders faz retry para a Inventory (até 2 retries, com orçamento de 2 s) e o circuito aberto interrompe os retries. O SDK do DynamoDB tem retry próprio (max_attempts=3) — outra camada a considerar.
-  - O estado do circuito é local por réplica. Com 4 réplicas, até 8 chamadas de teste em HALF_OPEN. Compartilhar estado é fase 2.
-  - Timeout após o commit (`slow-after-commit`): a reserva **aconteceu**. Por isso não há compensação cega, e o retry reutiliza a mesma reserva (idempotência na Inventory).
-  - Readiness não verifica a Inventory, de propósito. Se verificasse, todas as réplicas da Orders sairiam do Service (cascata).
 
 ### LAB X1 — ClickStack Alerting (extra, fora da agenda)
 

@@ -67,16 +67,6 @@ Testar as classes **BestEffort, Burstable e Guaranteed** na Inventory API. Simul
 
 **Duração sugerida:** 60 minutos.
 
-## LAB 07 — Circuit Breaker & Failure Recovery
-
-**Tema:** Resiliência de aplicações distribuídas.
-
-Provocar latência artificial e respostas HTTP 503 na Inventory API. Examinar timeouts, retries e a transição do Circuit Breaker da Orders API entre **CLOSED → OPEN → HALF_OPEN → CLOSED**, incluindo rejeição rápida e recuperação controlada.
-
-**Aprendizado principal:** uma dependência degradada não deve provocar falha descontrolada em toda a cadeia transacional.
-
-**Duração sugerida:** 60 minutos.
-
 ## LAB X1 — ClickStack Observability & Alerting
 
 **Tema:** Métricas, logs, traces e alertas.
@@ -96,11 +86,10 @@ Investigar requisições ponta a ponta usando OpenTelemetry e HyperDX. Examinar 
 | LAB 01 — Plataforma transacional | 90 min |
 | LAB 06 — Autoscaling | 75 min |
 | LAB 05 — QoS e prioridades | 60 min |
-| LAB 07 — Circuit Breaker | 60 min |
 | LAB X1 — ClickStack e alertas | 75 min |
-| **Total hands-on** | **360 min (6 horas)** |
+| **Total hands-on** | **300 min (5 horas)** |
 
-Com abertura, intervalo e encerramento, planejar **aproximadamente 7 horas**. Recomenda-se disponibilizar a infraestrutura pré-provisionada para manter a agenda.
+Com abertura, intervalo e encerramento, planejar **aproximadamente 6 horas**. Recomenda-se disponibilizar a infraestrutura pré-provisionada para manter a agenda.
 
 ## Mensagem de encerramento para a reunião
 

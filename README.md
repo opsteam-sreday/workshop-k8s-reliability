@@ -61,7 +61,7 @@ eks-reliability-workshop/
 ├── observability/    clickstack/ (values, bootstrap) · otel/ (gateway, agent) · alerts/ · queries/
 ├── load-tests/       create-orders.js · get-orders.js · stress-orders.js · inventory-errors.js
 │                     idempotency-concurrency.js · lib/common.js
-├── labs/             lab-01 … lab-04 (README + scripts) · .extras/lab-x1 (alerting, fora da agenda)
+├── labs/             lab-01 … lab-06 (README + scripts) · .extras/lab-x1 (alerting, fora da agenda)
 ├── scripts/          setup.sh · deploy.sh · validate.sh · validate-iam.sh · reset.sh · teardown.sh
 │                     fault.sh · k6.sh · test.sh · local/stack.py · lib/
 ├── tests/integration (processos reais + DynamoDB Local)
@@ -167,7 +167,6 @@ curl -s -X POST $BFF/orders -H "Idempotency-Key: $(uuidgen | tr A-Z a-z)" -H 'Co
 | [LAB 04](labs/lab-04/README.md) | Affinity, Anti-affinity, Topology Spread & Taints (nodeAffinity, podAntiAffinity, podAffinity, maxSkew, drain, taints NoSchedule/NoExecute, tolerations) | patches em `kubernetes/labs/scheduling/` (`make lab04-*`) | `labs/lab-02/watch-pod.sh` |
 | [LAB 05](labs/lab-05/README.md) | QoS & PriorityClass (throttling, OOMKilled, preemption) | `labs/lab-05/qos.sh …`, `labs/lab-05/fill-capacity.py` | ver README |
 | [LAB 06](labs/lab-06/README.md) | CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | `kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS=40` + `scripts/k6.sh stress-orders.js RATE=60 DURATION=6m` | `labs/lab-06/verify.sh` |
-| [LAB 07](labs/lab-07/README.md) | Circuit Breaker (CLOSED → OPEN → HALF_OPEN → CLOSED) | `scripts/fault.sh inventory latency 800 RESERVATIONS` + `labs/lab-07/watch-cb.sh` | ver README |
 | *Extra:* [LAB X1](labs/.extras/lab-x1/README.md) | ClickStack Alerting (4 alertas, anti-pattern) — fora da agenda | `scripts/fault.sh inventory http-503 …` + `scripts/k6.sh inventory-errors.js` | `labs/.extras/lab-x1/compare-counts.sh` |
 
 **Turma com um ambiente por aluno** (mesma conta, isolamento por cluster/tabela/role + login via IAM Identity Center):

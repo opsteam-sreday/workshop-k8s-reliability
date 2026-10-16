@@ -27,8 +27,6 @@ RATE      ?=
 DURATION  ?=
 VUS       ?=
 PROFILE   ?= burstable
-MS        ?= 800
-TARGET    ?= ALL
 MB        ?= 700
 WORKERS   ?= 2
 SLACK     ?= 100
@@ -439,26 +437,6 @@ lab06-verify: ## Coleta evidências de HPA e Cluster Autoscaler
 
 lab06-stop: ## Remove o CPU stress da Orders
 	$(NS) set env deploy/orders-api ORDERS_CPU_WORK_MS-
-
-##@ LAB 07 — Circuit Breaker
-.PHONY: lab07-load lab07-watch lab07-latency lab07-503 lab07-slow-commit lab07-recover
-lab07-load: ## Tráfego sem retry do cliente (RATE=5 DURATION=5m)
-	scripts/k6.sh create-orders.js RATE=$(or $(RATE),5) DURATION=$(or $(DURATION),5m) RETRY_ON_ERROR=false
-
-lab07-watch: ## Estado do Circuit Breaker por réplica
-	labs/lab-07/watch-cb.sh
-
-lab07-latency: ## Latência na Inventory (MS=800 TARGET=ALL|RESERVATIONS|QUERIES)
-	scripts/fault.sh inventory latency $(MS) $(TARGET)
-
-lab07-503: ## HTTP 503 na Inventory (TARGET=ALL|RESERVATIONS|QUERIES)
-	scripts/fault.sh inventory http-503 $(TARGET)
-
-lab07-slow-commit: ## Reserva aplicada + resposta lenta (MS=800)
-	scripts/fault.sh inventory slow-after-commit $(MS)
-
-lab07-recover: ## Remove falhas da Inventory (CB: HALF_OPEN -> CLOSED)
-	scripts/fault.sh inventory reset
 
 ##@ LAB X1 (extra, labs/.extras/lab-x1) — ClickStack Alerting
 .PHONY: labx1-trigger labx1-load labx1-webhook labx1-compare labx1-crash labx1-stop

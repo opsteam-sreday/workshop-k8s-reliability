@@ -410,7 +410,7 @@ Respostas da BFF na janela: **1160 × `201`, 6 × `504`, 2 × `409`** (de 1168).
   pronto. Se o novo nunca fica pronto (parte C), o rollout para e o serviço continua no ar.
 - **Readiness não verifica dependências (parte D).** Se verificasse a Inventory, as **duas** réplicas da Orders
   sairiam do Service ao mesmo tempo, e a BFF passaria a receber erro de conexão (cascata). A falha da dependência
-  é tratada no lugar certo: timeout, retry e Circuit Breaker na chamada (LAB 07).
+  é tratada no lugar certo: timeout, retry e Circuit Breaker na chamada.
 - **Nesta implementação, readiness e liveness só divergem em dois casos:** o shutdown (os 5 s do `SIGTERM`) e o
   `not-ready` do lab. "Ainda não iniciou" já é coberto pela startup probe. Manter as duas rotas separadas custa
   zero e deixa a readiness pronta para motivos próprios **da réplica** (warm-up, manutenção, saturação local).

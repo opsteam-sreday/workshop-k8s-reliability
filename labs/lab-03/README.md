@@ -387,7 +387,7 @@ param no `SIGTERM` e as requisições dos ~3 s de startup falham.
 | 04:05:57 | o Pod antigo encerra |
 | 04:05:58 | **só então** o Pod novo é criado (`Recreate`) |
 | 04:06:02 | o Pod novo fica pronto: a Inventory ficou **~5 s** fora |
-| 04:05:57 → 04:06:12 | `503` na BFF por **~15 s** (**218 respostas**): o Circuit Breaker abriu (`OPEN` nas 2 réplicas da Orders) e só fecha após os 15 s de `recovery_timeout` (LAB 07) |
+| 04:05:57 → 04:06:12 | `503` na BFF por **~15 s** (**218 respostas**): o Circuit Breaker abriu (`OPEN` nas 2 réplicas da Orders) e só fecha após os 15 s de `recovery_timeout` (`CB_RECOVERY_TIMEOUT_SECONDS`) |
 
 O Circuit Breaker protege a Inventory, mas **estende** a indisponibilidade percebida além da queda real.
 
@@ -425,7 +425,7 @@ queda foi o tempo até o novo ficar pronto, somado à recuperação do Circuit B
   antigas pararem. O risco aparece quando a aplicação para no `SIGTERM` (B2) ou demora a subir: aí a janela sem
   ninguém atendendo vira erro. `1/0` não depende dessas condições — por isso é o padrão seguro.
 - **O Circuit Breaker estende a indisponibilidade (parte C).** A Inventory ficou ~5 s fora, mas a BFF respondeu `503`
-  por ~15 s: o Circuit Breaker da Orders abriu e só testa a dependência de novo após o `recovery_timeout` (LAB 07).
+  por ~15 s: o Circuit Breaker da Orders abriu e só testa a dependência de novo após o `recovery_timeout` (15 s, `CB_RECOVERY_TIMEOUT_SECONDS`).
   Ele protege a dependência e corta latência, ao custo de alguns segundos de erro a mais depois da volta.
 - **`Recreate` existe para quando duas versões não podem coexistir.** A Inventory guarda o estoque em memória numa
   réplica única: duas réplicas teriam estoques diferentes. O preço é a janela de indisponibilidade em **todo**
