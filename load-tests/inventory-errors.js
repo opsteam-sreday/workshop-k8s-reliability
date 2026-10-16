@@ -1,4 +1,4 @@
-// Gera tráfego de criação e consulta enquanto falhas são injetadas na Inventory API (LAB 07 e LAB X1).
+// Gera tráfego de criação e consulta enquanto falhas são injetadas na Inventory API (LAB X1).
 // A injeção é feita ANTES via scripts/fault.sh (ex.: scripts/fault.sh inventory http-503).
 // Variáveis: BASE_URL, RATE (padrão 5), DURATION (padrão 3m), VUS, HTTP_TIMEOUT,
 //            EXPECT_ERRORS (true => valida que 503 DEPENDENCY_UNAVAILABLE ocorreu)

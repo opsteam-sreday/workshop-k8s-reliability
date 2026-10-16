@@ -1,0 +1,7 @@
+# LAB 04 — remove as tolerations aplicadas pelo lab (strategic merge: null apaga o campo; idempotente). Os manifests
+# das APIs não declaram tolerations; as padrão (not-ready/unreachable, 300 s) são adicionadas na criação do Pod.
+# Uso: kubectl -n ecommerce patch deploy <api> --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+spec:
+  template:
+    spec:
+      tolerations: null

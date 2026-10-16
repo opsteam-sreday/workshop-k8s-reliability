@@ -387,7 +387,7 @@ param no `SIGTERM` e as requisições dos ~3 s de startup falham.
 | 04:05:57 | o Pod antigo encerra |
 | 04:05:58 | **só então** o Pod novo é criado (`Recreate`) |
 | 04:06:02 | o Pod novo fica pronto: a Inventory ficou **~5 s** fora |
-| 04:05:57 → 04:06:12 | `503` na BFF por **~15 s** (**218 respostas**): o Circuit Breaker abriu (`OPEN` nas 2 réplicas da Orders) e só fecha após os 15 s de `recovery_timeout` (LAB 07) |
+| 04:05:57 → 04:06:12 | `503` na BFF por **~15 s** (**218 respostas**): o Circuit Breaker abriu (`OPEN` nas 2 réplicas da Orders) e só fecha após os 15 s de `recovery_timeout` (`CB_RECOVERY_TIMEOUT_SECONDS`) |
 
 O Circuit Breaker protege a Inventory, mas **estende** a indisponibilidade percebida além da queda real.
 
@@ -425,7 +425,7 @@ queda foi o tempo até o novo ficar pronto, somado à recuperação do Circuit B
   antigas pararem. O risco aparece quando a aplicação para no `SIGTERM` (B2) ou demora a subir: aí a janela sem
   ninguém atendendo vira erro. `1/0` não depende dessas condições — por isso é o padrão seguro.
 - **O Circuit Breaker estende a indisponibilidade (parte C).** A Inventory ficou ~5 s fora, mas a BFF respondeu `503`
-  por ~15 s: o Circuit Breaker da Orders abriu e só testa a dependência de novo após o `recovery_timeout` (LAB 07).
+  por ~15 s: o Circuit Breaker da Orders abriu e só testa a dependência de novo após o `recovery_timeout` (15 s, `CB_RECOVERY_TIMEOUT_SECONDS`).
   Ele protege a dependência e corta latência, ao custo de alguns segundos de erro a mais depois da volta.
 - **`Recreate` existe para quando duas versões não podem coexistir.** A Inventory guarda o estoque em memória numa
   réplica única: duas réplicas teriam estoques diferentes. O preço é a janela de indisponibilidade em **todo**
@@ -444,6 +444,238 @@ queda foi o tempo até o novo ficar pronto, somado à recuperação do Circuit B
   nunca sai e o drain do nó trava. Não há valor certo: disponibilidade exige 2+ réplicas.
 - **Drain + topology spread.** O drain usa as mesmas regras de agendamento: os Pods despejados vão para o outro nó
   (o nó drenado está cordoned e sai da conta do spread) e não voltam sozinhos depois do `uncordon` (LAB 04, parte E3).
+
+### Os mecanismos nos diagramas da documentação do Kubernetes
+
+Cada mecanismo do lab, ilustrado com os exemplos de [kubernetes.io](https://kubernetes.io/docs/)
+(conteúdo sob [CC BY 4.0](https://github.com/kubernetes/website/blob/main/LICENSE)). Os marcados **oficial** são as
+figuras da página citada, iguais ao original. As páginas de Deployment e de PodDisruptionBudget explicam com texto e
+tabelas, sem diagramas: os marcados **adaptado** desenham o exemplo do próprio texto oficial, no estilo visual dos
+diagramas da doc. Nomes de Pods, nós e Deployments seguem os exemplos da doc (não os do workshop).
+
+**1. Rolling update, passo a passo — partes A e B** (oficial,
+[Performing a Rolling Update](https://kubernetes.io/docs/tutorials/kubernetes-basics/update/update-intro/)). Um Pod
+novo por vez substitui um antigo, e o Service só manda tráfego para os Pods prontos:
+
+| 1. estado inicial | 2. o 1º Pod novo sobe |
+|:---:|:---:|
+| ![Rolling update 1](https://kubernetes.io/docs/tutorials/kubernetes-basics/public/images/module_06_rollingupdates1.svg) | ![Rolling update 2](https://kubernetes.io/docs/tutorials/kubernetes-basics/public/images/module_06_rollingupdates2.svg) |
+| **3. troca em andamento** | **4. rollout concluído** |
+| ![Rolling update 3](https://kubernetes.io/docs/tutorials/kubernetes-basics/public/images/module_06_rollingupdates3.svg) | ![Rolling update 4](https://kubernetes.io/docs/tutorials/kubernetes-basics/public/images/module_06_rollingupdates4.svg) |
+
+O tutorial usa o padrão de `maxSurge`/`maxUnavailable`. No lab, a parte A fixa `1/0` (sempre sobe antes de derrubar)
+e a parte B usa `0/100%` (derruba tudo antes de subir).
+
+**2. `maxSurge` e `maxUnavailable` — partes A e B** (adaptado de
+[Deployments › Updating a Deployment](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#updating-a-deployment)).
+O `nginx-deployment` da doc tem 3 réplicas e usa o padrão de 25%: `maxSurge` arredonda para cima (1) e
+`maxUnavailable` para baixo (0). Os eventos `ScalingReplicaSet` que a doc mostra viram esta sequência, sempre com
+**no mínimo 3 prontos e no máximo 4 Pods**:
+
+```mermaid
+graph LR
+    s0["RS antigo: 3<br/>RS novo: 0"] -- "Scaled up new to 1" --> s1["RS antigo: 3<br/>RS novo: 1<br/>(4 Pods = 3 + maxSurge)"]
+    s1 -- "Scaled down old to 2" --> s2["RS antigo: 2<br/>RS novo: 1"]
+    s2 -- "Scaled up new to 2" --> s3["RS antigo: 2<br/>RS novo: 2"]
+    s3 -- "Scaled down old to 1" --> s4["RS antigo: 1<br/>RS novo: 2"]
+    s4 -- "Scaled up new to 3" --> s5["RS antigo: 1<br/>RS novo: 3"]
+    s5 -- "Scaled down old to 0" --> s6["RS antigo: 0<br/>RS novo: 3"]
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    class s0 plain;
+    class s1,s2,s3,s4,s5 k8s;
+    class s6 plain;
+```
+
+A mesma página traz três variantes do `strategy` para as 3 réplicas. O que muda é o **primeiro passo** do rollout:
+
+```mermaid
+graph TB
+    subgraph U["maxUnavailable: 1 (sem surge)"]
+        u1["derruba 1 antigo → 2 prontos<br/>depois sobe 1 novo"]
+    end
+    subgraph S["maxSurge: 1 (sem indisponibilidade)"]
+        s1["sobe 1 novo → 4 Pods<br/>só derruba 1 antigo quando o novo fica pronto"]
+    end
+    subgraph H["maxSurge: 1 + maxUnavailable: 1"]
+        h1["sobe 1 novo e derruba 1 antigo ao mesmo tempo<br/>mais rápido; mínimo de 2 prontos"]
+    end
+
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class u1,s1,h1 k8s;
+    class U,S,H cluster;
+```
+
+`maxSurge: 1` é o `1/0` da parte A. Levando `maxUnavailable` ao limite (100%), chega-se à parte B. A doc lembra
+também que Pods **em terminação** não contam como disponíveis: durante o graceful shutdown pode haver mais Pods do que
+`replicas + maxSurge`.
+
+**3. `Recreate` — parte C** (adaptado de
+[Deployments › Recreate Deployment](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#recreate-deployment)).
+*"All existing Pods are killed before new ones are created"*: as versões nunca coexistem, mas sempre há uma janela sem
+nenhum Pod:
+
+```mermaid
+graph LR
+    r0["RS antigo: 1<br/>RS novo: 0"] -- "todos os antigos encerram" --> r1["RS antigo: 0<br/>RS novo: 0<br/>⚠ nenhum Pod atende"]
+    r1 -- "só então os novos sobem" --> r2["RS antigo: 0<br/>RS novo: 1"]
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    class r0,r2 k8s;
+    class r1 plain;
+```
+
+**4. PodDisruptionBudget durante drains — parte D** (adaptado de
+[Disruptions › PodDisruptionBudget example](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/#pdb-example)).
+A doc mostra o exemplo em tabelas; aqui são as mesmas tabelas, desenhadas. `pod-a`, `pod-b` e `pod-c` são as 3 réplicas
+de um Deployment com PDB que exige **pelo menos 2 disponíveis**. `pod-x` é de outra aplicação, sem PDB. Em azul,
+disponível; em cinza, em terminação, subindo ou `Pending`.
+
+Estado inicial:
+
+```mermaid
+graph BT
+    subgraph N1["node-1"]
+        a(pod-a)
+        x(pod-x)
+    end
+    subgraph N2["node-2"]
+        b(pod-b)
+    end
+    subgraph N3["node-3"]
+        c(pod-c)
+    end
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class a,b,c,x k8s;
+    class N1,N2,N3 cluster;
+```
+
+`kubectl drain node-1`: o despejo de `pod-a` e `pod-x` é aceito na hora (3 disponíveis → 2, dentro da PDB). O
+Deployment cria `pod-d` e algo cria `pod-y` (o substituto de `pod-x`); como o `node-1` está cordoned, eles vão para
+outros nós:
+
+```mermaid
+graph BT
+    subgraph N1["node-1 (draining)"]
+        a(pod-a terminating)
+        x(pod-x terminating)
+    end
+    subgraph N2["node-2"]
+        b(pod-b)
+        d(pod-d starting)
+    end
+    subgraph N3["node-3"]
+        c(pod-c)
+        y(pod-y)
+    end
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class b,c,y k8s;
+    class a,x,d plain;
+    class N1,N2,N3 cluster;
+```
+
+Com o `node-1` drenado e `pod-d` ainda subindo, só há **2 disponíveis**: um drain do `node-2` ou do `node-3` agora
+**bloqueia** (seria 1, abaixo da PDB). É o `Cannot evict pod as it would violate the pod's disruption budget` da
+parte D:
+
+```mermaid
+graph BT
+    subgraph N1["node-1 (drained)"]
+        e1[" "]
+    end
+    subgraph N2["node-2"]
+        b(pod-b)
+        d(pod-d starting)
+    end
+    subgraph N3["node-3"]
+        c(pod-c)
+        y(pod-y)
+    end
+    dr["kubectl drain node-2<br/>bloqueado"] -. "429: deixaria 1 disponível" .-> N2
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    classDef empty fill:#fff,stroke:#fff,color:#fff;
+    class b,c,y k8s;
+    class d,dr plain;
+    class e1 empty;
+    class N1,N2,N3 cluster;
+```
+
+Quando `pod-d` fica disponível, o drain do `node-2` despeja `pod-b`, mas **recusa** `pod-d` (sobrariam 1). O
+substituto `pod-e` não cabe em nenhum nó, e o drain bloqueia de novo — até alguém adicionar um nó:
+
+```mermaid
+graph BT
+    subgraph N1["node-1 (drained)"]
+        e1[" "]
+    end
+    subgraph N2["node-2 (draining)"]
+        b(pod-b terminating)
+        d(pod-d)
+    end
+    subgraph N3["node-3"]
+        c(pod-c)
+        y(pod-y)
+    end
+    subgraph NN["sem nó"]
+        e(pod-e pending)
+    end
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    classDef empty fill:#fff,stroke:#fff,color:#fff;
+    class c,d,y k8s;
+    class b,e plain;
+    class e1 empty;
+    class N1,N2,N3,NN cluster;
+```
+
+A doc conclui que o ritmo das disrupções depende de quantas réplicas a aplicação precisa, do tempo de graceful
+shutdown, do tempo de subida, do tipo de controller e da capacidade do cluster — os mesmos fatores das partes D e E.
+No cluster do workshop, quem adiciona o nó é o Cluster Autoscaler.
+
+**5. O que a PDB cobre e o que não cobre — parte E** (adaptado de
+[Disruptions › Voluntary and involuntary disruptions](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/#voluntary-and-involuntary-disruptions)
+e [Pod disruption budgets](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/#pod-disruption-budgets)).
+Só quem chama a **Eviction API** passa pela PDB. Rollouts **contam** no orçamento, mas não são limitados por ele, e
+disrupções involuntárias também contam, mas não podem ser evitadas:
+
+```mermaid
+graph LR
+    subgraph V["voluntárias via Eviction API"]
+        d1(kubectl drain)
+        d2(Cluster Autoscaler scale-down)
+        d3(upgrade de node group)
+    end
+    subgraph B["fora da PDB"]
+        b1(kubectl delete pod — E1)
+        b2(rollout do Deployment — E2)
+        b3(falha de nó, OOM, preemption)
+    end
+    V --> P{"PDB: sobra o mínimo?"}
+    P -- "sim" --> OK(Pod despejado)
+    P -- "não" --> NO(429 — o drain retenta)
+    B --> DEL(Pod removido sem consultar a PDB)
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class d1,d2,d3,b1,b2,b3 k8s;
+    class P,OK,NO,DEL plain;
+    class V,B cluster;
+```
 
 ## 9. Correção
 
