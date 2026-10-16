@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Aplica um perfil de QoS na Inventory API e mostra a QoSClass resultante.
-# Uso: labs/lab-03/qos.sh besteffort|burstable|guaranteed
+# Uso: labs/lab-05/qos.sh besteffort|burstable|guaranteed
 source "$(dirname "$0")/../../scripts/lib/common.sh"
 profile="${1:?uso: qos.sh besteffort|burstable|guaranteed}"
 kubectl -n ecommerce patch deploy inventory-api --type json --patch-file "$REPO_ROOT/kubernetes/labs/qos/inventory-${profile}.patch.json"

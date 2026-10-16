@@ -44,7 +44,7 @@ scripts k6 e cinco laboratórios. O status de validação de cada item está em
 | Kubernetes | `kubernetes/` | base (Deployments, Services, NetworkPolicies, ValidatingAdmissionPolicy), QoS, PriorityClass, HPA |
 | Observabilidade | `observability/` | ClickStack (Helm), OTel Collectors, alertas + webhook, consultas HyperDX/SQL |
 | Carga | `load-tests/` | 5 scripts k6 (inclui 20 requisições concorrentes com a mesma chave) |
-| Laboratórios | `labs/lab-01..06` | 13 seções cada + scripts de apoio/verificação |
+| Laboratórios | `labs/lab-01..07` (+ extra `labs/.extras/lab-x1`) | 13 seções cada + scripts de apoio/verificação |
 
 ## Estrutura do repositório
 
@@ -61,7 +61,7 @@ eks-reliability-workshop/
 ├── observability/    clickstack/ (values, bootstrap) · otel/ (gateway, agent) · alerts/ · queries/
 ├── load-tests/       create-orders.js · get-orders.js · stress-orders.js · inventory-errors.js
 │                     idempotency-concurrency.js · lib/common.js
-├── labs/             lab-01 … lab-06 (README + scripts)
+├── labs/             lab-01 … lab-04 (README + scripts) · .extras/lab-x1 (alerting, fora da agenda)
 ├── scripts/          setup.sh · deploy.sh · validate.sh · validate-iam.sh · reset.sh · teardown.sh
 │                     fault.sh · k6.sh · test.sh · local/stack.py · lib/
 ├── tests/integration (processos reais + DynamoDB Local)
@@ -106,7 +106,7 @@ Todas as versões ficam em `scripts/lib/common.sh` e podem ser sobrescritas por 
 | NAT Gateway | 1 | 0,045 + dados |
 | EBS gp3 (nós + PVCs ClickHouse/Keeper/MongoDB ≈ 145 GB) | — | ≈ 0,02 |
 | DynamoDB on-demand, ECR | — | centavos |
-| **Total** | | **≈ 0,55/h em repouso · ≈ 0,85/h no pico do LAB 02** |
+| **Total** | | **≈ 0,55/h em repouso · ≈ 0,85/h no pico do LAB 06** |
 
 Uma turma de 4 h custa ≈ US$ 3–4. **Execute `scripts/teardown.sh` ao final.**
 
@@ -117,7 +117,7 @@ Atalho via `Makefile` (`make help` lista todos os alvos, por etapa e por laborat
 ```bash
 make check            # ferramentas + credenciais AWS
 make up               # setup + deploy + validate
-make lab02-start lab02-load    # exemplo: passos do LAB 02
+make lab06-start lab06-load    # exemplo: passos do LAB 06
 make reset            # entre laboratórios
 make teardown         # remove tudo (ASSUME_YES=true para não perguntar)
 ```
@@ -128,7 +128,7 @@ Ou diretamente pelos scripts:
 git clone <este-repo> && cd eks-reliability-workshop
 aws sts get-caller-identity                 # confirme conta e região
 export AWS_REGION=us-east-1                  # opcional (padrão us-east-1)
-export STUDENT_ID=aluno01                    # obrigatório: cluster rw-aluno01 (o instrutor usa o dele)
+export CLUSTER_ID=aluno01                    # obrigatório: cluster rw-aluno01 (o instrutor usa o dele)
 
 scripts/setup.sh      # ≈ 35–45 min: EKS, add-ons, DynamoDB, Pod Identity, CA, ClickStack, OTel, alertas
 scripts/deploy.sh     # build multi-arch + push ECR (só o que mudou) + deploy das 3 APIs + HPA
@@ -162,11 +162,13 @@ curl -s -X POST $BFF/orders -H "Idempotency-Key: $(uuidgen | tr A-Z a-z)" -H 'Co
 | Lab | Tema | Comando-chave | Verificação |
 |---|---|---|---|
 | [LAB 01](labs/lab-01/README.md) | First Successful Order (pedido, DynamoDB, Pod Identity, trace, idempotência) | `scripts/k6.sh idempotency-concurrency.js` | `scripts/validate.sh`, `scripts/validate-iam.sh` |
-| [LAB 02](labs/lab-02/README.md) | CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | `kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS=40` + `scripts/k6.sh stress-orders.js RATE=60 DURATION=6m` | `labs/lab-02/verify.sh` |
-| [LAB 03](labs/lab-03/README.md) | QoS & PriorityClass (throttling, OOMKilled, preemption) | `labs/lab-03/qos.sh …`, `labs/lab-03/fill-capacity.py` | ver README |
-| [LAB 04](labs/lab-04/README.md) | Circuit Breaker (CLOSED → OPEN → HALF_OPEN → CLOSED) | `scripts/fault.sh inventory latency 800 RESERVATIONS` + `labs/lab-04/watch-cb.sh` | ver README |
-| [LAB 05](labs/lab-05/README.md) | ClickStack Alerting (4 alertas, anti-pattern) | `scripts/fault.sh inventory http-503 …` + `scripts/k6.sh inventory-errors.js` | `labs/lab-05/compare-counts.sh` |
-| [LAB 06](labs/lab-06/README.md) | Probes, Graceful Shutdown & Topology Spread (readiness × liveness × startup, rollout, deploy quebrado, drain de nó) | `scripts/fault.sh orders not-ready\|freeze <s> <pod>` + `scripts/k6.sh create-orders.js` | `labs/lab-06/watch-pod.sh`, `labs/lab-06/count-responses.sh` |
+| [LAB 02](labs/lab-02/README.md) | Probes & Graceful Shutdown (readiness × liveness × startup, rollout sem erro, deploy quebrado, anti-cascata) | `scripts/fault.sh orders not-ready\|freeze <s> <pod>` + `scripts/k6.sh create-orders.js` | `labs/lab-02/watch-pod.sh`, `labs/lab-02/count-responses.sh` |
+| [LAB 03](labs/lab-03/README.md) | RollingUpdate & PodDisruptionBudget (maxSurge/maxUnavailable, Recreate, PDB × drain) | `make lab03-aggressive`, `make lab03-pdb-zero` + `kubectl drain` | `labs/lab-02/count-responses.sh` |
+| [LAB 04](labs/lab-04/README.md) | Affinity, Anti-affinity & Topology Spread (nodeAffinity, podAntiAffinity, podAffinity, maxSkew, drain) | patches em `kubernetes/labs/scheduling/` (`make lab04-*`) | `labs/lab-02/watch-pod.sh` |
+| [LAB 05](labs/lab-05/README.md) | QoS & PriorityClass (throttling, OOMKilled, preemption) | `labs/lab-05/qos.sh …`, `labs/lab-05/fill-capacity.py` | ver README |
+| [LAB 06](labs/lab-06/README.md) | CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | `kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS=40` + `scripts/k6.sh stress-orders.js RATE=60 DURATION=6m` | `labs/lab-06/verify.sh` |
+| [LAB 07](labs/lab-07/README.md) | Circuit Breaker (CLOSED → OPEN → HALF_OPEN → CLOSED) | `scripts/fault.sh inventory latency 800 RESERVATIONS` + `labs/lab-07/watch-cb.sh` | ver README |
+| *Extra:* [LAB X1](labs/.extras/lab-x1/README.md) | ClickStack Alerting (4 alertas, anti-pattern) — fora da agenda | `scripts/fault.sh inventory http-503 …` + `scripts/k6.sh inventory-errors.js` | `labs/.extras/lab-x1/compare-counts.sh` |
 
 **Turma com um ambiente por aluno** (mesma conta, isolamento por cluster/tabela/role + login via IAM Identity Center):
 `make fleet-quotas` · `make identity-center` · `make fleet-up` · `make fleet-down` — passo a passo no
@@ -214,14 +216,14 @@ Três workflows executam os mesmos scripts do Quick start em um runner descartá
 | Workflow | Equivale a | Entradas |
 |---|---|---|
 | `images` | `scripts/images.sh all` — um job por app, passo a passo: tag → lock → testes → build amd64 → build arm64 → índice multi-arch. Roda em push na `main` que mexa em `apps/**`, manualmente ou chamado pelo `workshop-up` | região |
-| `workshop-up` | `make up` (chama `images`, depois setup + deploy + validate) | região, `student_id` (obrigatório; o instrutor usa o dele), `student_username`, validate on/off |
-| `workshop-down` | `make teardown` | região, `student_id`, `confirm` = `rw-<student_id>` |
+| `workshop-up` | `make up` (chama `images`, depois setup + deploy + validate) | região, `cluster_id` (obrigatório; o instrutor usa o dele), `student_username`, validate on/off |
+| `workshop-down` | `make teardown` | região, `cluster_id`, `confirm` = `rw-<cluster_id>` |
 | `fleet-up` | `make fleet-up`: build único + um `workshop-up` por aluno em paralelo (matrix) | `students` (`id:username …`), região, `max_parallel`, validate on/off |
 
 `workshop-up` e `workshop-down` usam o mesmo grupo de `concurrency` por cluster (nunca rodam up e down ao mesmo tempo).
 
-**Um ambiente por aluno:** com `student_id=aluno07`, o workflow cria o cluster `rw-aluno07` com os nomes derivados dele
-(tabela, roles, secret, VPC `10.207.0.0/16`), igual a `STUDENT_ID=aluno07 make up`. Com `student_username`, também cria
+**Um ambiente por aluno:** com `cluster_id=aluno07`, o workflow cria o cluster `rw-aluno07` com os nomes derivados dele
+(tabela, roles, secret, VPC `10.207.0.0/16`), igual a `CLUSTER_ID=aluno07 make up`. Com `student_username`, também cria
 a role exclusiva do aluno + access entry (`infrastructure/student-access.sh`; exige o permission set já atribuído à
 conta: `make identity-center`). Execuções de alunos diferentes rodam em paralelo. A role do pipeline cobre só os
 ambientes `rw-*` (o instrutor usa um deles, ex.: `aluno01`); rode `make gha-role` após atualizar este repositório.

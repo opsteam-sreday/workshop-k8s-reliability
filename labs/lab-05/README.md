@@ -1,292 +1,447 @@
-# LAB 05 — ClickStack Alerting (anti-pattern intencional)
+# LAB 05 — QoS & PriorityClass
 
 > **Break it → Observe it → Understand it → Fix it → Validate it**
 >
-> Duração estimada: 40 min
+> Duração estimada: 50–60 min · Parte A (QoS) ≈ 25 min · Parte B (PriorityClass/Preemption) ≈ 25 min
 
 ---
 
 ## 1. Cenário
 
-O time precisa ser avisado quando pedidos ou consultas de estoque falham. A solução mais rápida foi criar, no
-HyperDX, **quatro alertas que contam logs `ERROR`** por serviço e rota. Eles disparam — mas o número que mostram
-**não é** o número de requisições com erro, e há falhas que eles simplesmente não enxergam.
+A Inventory API participa **de toda transação de pedido** (pré-consulta `GET /inventory/{sku}` e reserva
+`POST /inventory/reservations`). No modo STRICT do MVP, um pedido só é `CONFIRMED` depois da reserva de estoque.
+
+O time de plataforma "otimizou custos": a Inventory API ganhou requests/limits genéricos e, num cluster
+apertado, foi marcada como **baixa prioridade** porque "é só um serviço de estoque". Neste laboratório você vai
+ver o que acontece com essa dependência quando:
+
+- o **nó** fica sob pressão de CPU/memória (domínio do **QoS**);
+- o **scheduler** fica sem capacidade para agendar Pods críticos (domínio da **PriorityClass/preemption**).
+
+```mermaid
+flowchart LR
+    subgraph NODE["Pressão no NÓ → kubelet / kernel (QoS: requests/limits)"]
+        direction TB
+        C1["Uso de CPU acima do limit"] --> T1["CPU throttling (CFS cpu.max)<br/>Pod continua vivo, fica lento"]
+        M1["Memória do container atinge o limit"] --> O1["OOMKilled (kernel)<br/>container reinicia, estado em memória perdido"]
+        N1["Nó sem memória (memory.available baixo)"] --> E1["Eviction (kubelet)<br/>BestEffort primeiro, depois Burstable acima do request"]
+    end
+    subgraph SCHED["Falta de capacidade de AGENDAMENTO → kube-scheduler (PriorityClass)"]
+        direction TB
+        P1["Pod novo não cabe em nenhum nó"] --> P2{"Existe Pod de prioridade<br/>ESTRITAMENTE menor que libere o suficiente?"}
+        P2 -- sim --> P3["Preemption: vítima removida<br/>(QoS não entra na conta)"]
+        P2 -- não --> P4["Pod fica Pending<br/>(Cluster Autoscaler, se ligado, cria nó)"]
+    end
+```
 
 ## 2. Hipótese
 
-1. Os quatro alertas disparam quando provocamos falhas (≥ 5 logs ERROR em 5 min).
-2. `COUNT(logs ERROR)` **superestima** as falhas quando uma requisição gera mais de um log ERROR (log contextual +
-   log de conclusão) e **subestima** quando a falha não gera log ERROR (ex.: crash do processo).
-3. Spans HTTP SERVER e métricas HTTP não amostradas, por rota e status, medem as falhas corretamente.
+1. Requests/limits determinam a `QoSClass` (`BestEffort`, `Burstable`, `Guaranteed`), e cada classe sofre de forma
+   diferente: **limit de CPU causa throttling** (não mata), **limit de memória causa OOMKilled** (mata o container),
+   **pressão no nó causa eviction** (kubelet remove Pods — BestEffort primeiro).
+2. `Guaranteed` **não** protege contra preemption: um Pod Guaranteed de baixa prioridade é removido pelo scheduler para
+   abrir espaço a um Pod de prioridade maior.
+3. Como a Inventory API é dependência transacional, removê-la derruba **todos** os pedidos (503 + Circuit Breaker OPEN).
+   QoS e PriorityClass resolvem problemas **diferentes**.
 
 ## 3. Pré-requisitos
 
-- LAB 01 concluído; `scripts/reset.sh` executado.
-- Alertas criados pelo `scripts/setup.sh` (`observability/alerts/create_alerts.py`). Para recriar/atualizar:
-
-```bash
-source scripts/lib/common.sh && source scripts/lib/hyperdx-port-forward.sh && start_hyperdx_port_forward
-python3 observability/alerts/create_alerts.py --app-url http://localhost:3000 --api-url http://localhost:8000 \
-  --creds .workshop/hyperdx-credentials.json \
-  --webhook-url http://alert-webhook.observability.svc.cluster.local:8080/alerts
-stop_hyperdx_port_forward
-```
-
-- HyperDX: `kubectl -n observability port-forward svc/clickstack-app 3000:3000` → <http://localhost:3000>
-  (usuário/senha em `.workshop/hyperdx-credentials.json`).
+- LAB 01 concluído (`scripts/validate.sh` sem falhas).
+- `kubectl` apontando para o cluster do workshop; `python3` local (para `fill-capacity.py`).
+- Acesso ao HyperDX: `kubectl -n observability port-forward svc/clickstack-app 3000:3000` → <http://localhost:3000>
+  (credenciais em `.workshop/hyperdx-credentials.json`).
+- Três terminais: **T1** comandos, **T2** observação (`watch`/scripts), **T3** carga k6.
 
 ## 4. Estado inicial
 
 ```bash
-scripts/fault.sh inventory status        # NONE
-scripts/fault.sh orders status           # db_fault_mode NONE
-kubectl -n observability get deploy alert-webhook
-kubectl -n observability exec deploy/alert-webhook -- python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/alerts').read().decode())"
+scripts/reset.sh
+kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,QOS:.status.qosClass,PRIORITY:.spec.priorityClassName,NODE:.spec.nodeName
+kubectl get priorityclass critical-services low-priority-services
+kubectl get nodes -l workload=apps
 ```
 
-Na UI do HyperDX → **Alerts**: os quatro alertas existem, estado `OK` (ou sem dados).
+Esperado:
 
-| Alert | Service | Route | Threshold |
-|---|---|---|---|
-| Orders Creation Errors | orders-api | `POST /orders` | ≥ 5 ERROR logs / 5 min |
-| Orders Query Errors | orders-api | `GET /orders` e `GET /orders/{order_id}` | ≥ 5 ERROR logs / 5 min |
-| Inventory Creation Errors | inventory-api | `POST /inventory/reservations` | ≥ 5 ERROR logs / 5 min |
-| Inventory Query Errors | inventory-api | `GET /inventory/{sku}` | ≥ 5 ERROR logs / 5 min |
+| Workload | QoSClass | PriorityClass |
+|---|---|---|
+| bff-api (2) | Burstable (200m/256Mi → 1000m/256Mi) | `critical-services` (1000) |
+| orders-api (2+) | Burstable (250m/256Mi → 1000m/384Mi) | `critical-services` (1000) |
+| inventory-api (1) | Burstable (100m/128Mi → 500m/512Mi) | `critical-services` (1000) — o lab troca para `low-priority-services` |
 
-Filtros (Lucene, source **Logs**) — veja `observability/alerts/create_alerts.py`:
+2 nós `apps` (`m6i.large`), Cluster Autoscaler com 1 réplica.
 
-```text
-Orders Creation Errors:
-ServiceName:"orders-api" LogAttributes.http.route:"/orders" LogAttributes.http.request.method:"POST" LogAttributes.level:"ERROR" LogAttributes.http.response.status_code:>499
-
-Orders Query Errors:
-ServiceName:"orders-api" (LogAttributes.http.route:"/orders" OR LogAttributes.http.route:"/orders/{order_id}") LogAttributes.http.request.method:"GET" LogAttributes.level:"ERROR" LogAttributes.http.response.status_code:>499
-
-Inventory Creation Errors:
-ServiceName:"inventory-api" LogAttributes.http.route:"/inventory/reservations" LogAttributes.http.request.method:"POST" LogAttributes.level:"ERROR" LogAttributes.http.response.status_code:>499
-
-Inventory Query Errors:
-ServiceName:"inventory-api" LogAttributes.http.route:"/inventory/{sku}" LogAttributes.http.request.method:"GET" LogAttributes.level:"ERROR" LogAttributes.http.response.status_code:>499
-```
-
-> `LogAttributes.level` é emitido pelas APIs. O ClickStack normaliza `SeverityText` para minúsculas (`error`), por isso
-> o filtro usa o atributo próprio. O timestamp é aplicado pela janela do alerta (5 min).
-
-Cada definição de alerta no código carrega o comentário obrigatório:
-
-```text
-# ============================================================
-# ERRO DE IMPLEMENTAÇÃO INTENCIONAL — OBSERVABILITY ANTI-PATTERN
-#
-# Este alerta utiliza COUNT(logs) para contabilizar falhas HTTP.
-#
-# Essa abordagem é conceitualmente incorreta como medida exata
-# de requisições com erro, pois uma única requisição pode gerar
-# múltiplos logs, enquanto outra pode falhar sem registrar ERROR.
-#
-# IMPLEMENTAÇÃO RECOMENDADA:
-# Utilizar métricas HTTP não amostradas ou agregações adequadas
-# de spans HTTP SERVER por rota e status.
-#
-# Este anti-pattern é intencional e será corrigido na fase 2.
-# ============================================================
-```
+---
 
 ## 5. Comandos executáveis
 
-### 5.1 Disparar os alertas de criação (Orders + Inventory)
+### Parte A — QoS
+
+#### A.1 Classificação QoS dos três perfis
 
 ```bash
-scripts/fault.sh inventory http-503 RESERVATIONS     # precheck GET ok, reserva sempre 503
-scripts/k6.sh inventory-errors.js RATE=4 DURATION=3m
+labs/lab-05/qos.sh besteffort     # resources: {}                         -> BestEffort
+labs/lab-05/qos.sh burstable      # requests 100m/128Mi, limits 500m/512Mi -> Burstable
+labs/lab-05/qos.sh guaranteed     # requests == limits 500m/512Mi          -> Guaranteed
 ```
 
-Gera: `POST /inventory/reservations` 503 (Inventory Creation Errors) e `POST /orders` 503 (Orders Creation Errors).
+```mermaid
+flowchart TD
+    R["resources do container"] --> Q1{"Algum request ou limit?"}
+    Q1 -- "não ({})" --> BE["BestEffort<br/>(perfil besteffort)"]
+    Q1 -- sim --> Q2{"requests == limits<br/>para CPU e memória?"}
+    Q2 -- "sim (500m/512Mi = 500m/512Mi)" --> G["Guaranteed<br/>(perfil guaranteed)"]
+    Q2 -- "não (100m/128Mi → 500m/512Mi)" --> BU["Burstable<br/>(perfil burstable, padrão da Inventory)"]
+```
 
-### 5.2 Disparar o alerta de consulta da Orders
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Sem resources | `qos.sh besteffort` | Pod recriado (`Recreate`) como `BestEffort`; estoque em memória reiniciado | `kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api -o jsonpath='{.items[0].status.qosClass}'` |
+| Request < limit | `qos.sh burstable` | `Burstable` (100m/128Mi → 500m/512Mi) | idem |
+| Request = limit | `qos.sh guaranteed` | `Guaranteed` (500m/512Mi) | idem |
+
+Os perfis estão em `kubernetes/labs/qos/inventory-*.patch.json` (JSON patch sobre `containers[0].resources`).
+A Inventory API usa `strategy: Recreate` (réplica única com estado em memória), então cada troca de perfil
+**recria o Pod** — e reinicia o estoque/reservas em memória.
+
+Os dois experimentos seguintes batem no **limit** do container, mas o resultado é oposto porque CPU é comprimível
+e memória não:
+
+```mermaid
+flowchart LR
+    subgraph CPU["A.2 — cpu-burn 2 (~2 cores) contra limit 500m"]
+        direction TB
+        a1["Processo pede mais CPU"] --> a2["CFS: cota cpu.max 50000/100000 esgotada"]
+        a2 --> a3["Processo pausado até o próximo período de 100 ms"]
+        a3 --> a4["nr_throttled ↑ · latência ↑ · RESTARTS igual"]
+    end
+    subgraph MEM["A.3 — memory 700 contra limit 512Mi"]
+        direction TB
+        b1["Ballast cresce 16 MiB / 250 ms"] --> b2["cgroup atinge memory.max (512Mi)"]
+        b2 --> b3["Kernel mata o processo (OOM killer)"]
+        b3 --> b4["OOMKilled · RESTARTS +1 · estoque/reservas zerados"]
+    end
+```
+
+#### A.2 CPU throttling (perfil com limit de CPU)
 
 ```bash
-scripts/fault.sh inventory reset
-scripts/fault.sh orders db FAIL_READS                 # GetItem/Query falham => GET /orders 503
-scripts/k6.sh inventory-errors.js RATE=4 DURATION=3m EXPECT_ERRORS=false
+# T1 — perfil Burstable (limit 500m) e 2 processos consumindo 1 core cada
+labs/lab-05/qos.sh burstable
+scripts/fault.sh inventory cpu-burn 2
+
+# T2 — contadores do cgroup v2 a cada 5s
+labs/lab-05/cpu-stat.sh
 ```
 
-O `inventory-errors.js` também chama `GET /orders?customer_id=…` a cada iteração. Com `EXPECT_ERRORS=false` o
-threshold do k6 exige `http_req_failed < 5%` e vai **falhar** — é esperado: o objetivo aqui é gerar erros de
-consulta. (Alternativamente use `scripts/k6.sh get-orders.js` **antes** de injetar a falha: o `setup` cria pedidos.)
-
-### 5.3 Disparar o alerta de consulta da Inventory
-
-```bash
-scripts/fault.sh orders reset
-scripts/fault.sh inventory http-503 QUERIES          # falha o precheck GET /inventory/{sku} da Orders
-scripts/k6.sh inventory-errors.js RATE=4 DURATION=3m
-```
-
-### 5.4 Verificar os alertas e o webhook
-
-Os alertas são avaliados a cada ~1 minuto sobre janelas de 5 minutos. Aguarde 1–2 min após o tráfego.
-
-```bash
-kubectl -n observability logs deploy/alert-webhook --since=15m | grep "ALERTA RECEBIDO"
-kubectl -n observability exec deploy/alert-webhook -- python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/alerts').read().decode())"
-```
-
-Payload recebido (campos definidos em `WEBHOOK_BODY`): `alert`, `state` (`ALERT`/`OK`), `status` (`firing`/`resolved`),
-`value` (contagem de logs na janela), `threshold`, `startTime`, `endTime`, `link` (search no HyperDX), `body` (amostra
-das linhas), `alertId`.
-
-Na UI: **Alerts** → estado `ALERT`; clique no alerta → saved search com as linhas que foram contadas.
-
-### 5.5 Medir o anti-pattern
-
-```bash
-scripts/fault.sh all reset
-labs/lab-05/compare-counts.sh 15
-```
-
-O script consulta o ClickHouse do ClickStack e mostra, por serviço/rota, na janela de 15 min:
-
-- **(a)** `COUNT(logs ERROR)` — o que os alertas usam;
-- **(b)** `uniqExact(request_id)` dos logs ERROR — requisições distintas;
-- **(c)** spans `SpanKind='Server'` com `http.response.status_code >= 500`;
-- **(d)** métrica `http.server.request.duration` (contagem de 5xx por método/rota/status);
-- **(e)** requisições 5xx na BFF sem nenhum log ERROR na Orders API.
-
-Evidência da validação local do workshop:
+Saída esperada do `cpu-stat.sh`:
 
 ```text
-== (a) COUNT(logs ERROR)                 orders-api  POST  /orders   678
-== (b) requisições distintas             orders-api  POST  /orders   339
-== (c) spans HTTP SERVER 5xx             orders-api  POST /orders    339
+10:41:05 cpu.max=[50000 100000] nr_periods 1200 nr_throttled 1150 throttled_usec 61234567
 ```
 
-### 5.6 Falha SEM log ERROR
+`cpu.max = 50000 100000` → 50 ms de CPU a cada período de 100 ms = **500m**. Com demanda de ~2 cores,
+praticamente todo período é throttled.
+
+Meça o efeito na latência pelo caminho real do pedido (a NetworkPolicy só permite Orders → Inventory):
 
 ```bash
-scripts/fault.sh orders crash-after-reservation       # vale para TODAS as réplicas em execução
-scripts/k6.sh create-orders.js RATE=2 DURATION=1m RETRY_ON_ERROR=false
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api    # RESTARTS > 0
-kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api \
-  -o jsonpath='{range .items[*]}{.metadata.name}{" exit="}{.status.containerStatuses[0].lastState.terminated.exitCode}{"\n"}{end}'
-labs/lab-05/compare-counts.sh 10
+# T3 — carga leve de pedidos durante o throttling
+scripts/k6.sh create-orders.js RATE=5 DURATION=2m
 ```
 
-Cada réplica morre (`os._exit(137)`) na primeira requisição após reservar o estoque e reinicia com as falhas
-desligadas. O único log é `FALHA INJETADA: encerrando o processo…` com nível **CRITICAL** (atributo
-`level=FATAL`) — **não** há log `HTTP request completed` nem log `ERROR`. A BFF responde `503`
-(`Orders API indisponível`), o alerta *Orders Creation Errors* **não conta** essa falha, e a consulta **(e)** fica > 0.
-Se o cliente repetir com a mesma `Idempotency-Key`, recebe `409 ORDER_IN_PROGRESS` até o lease (10 s) expirar e
-depois o pedido é recuperado (`orders.idempotency.recovery`), sem duplicar a reserva (aqui o k6 roda com
-`RETRY_ON_ERROR=false`, então esses registros ficam `IN_PROGRESS` — recuperáveis, conforme o contrato).
+Compare `http_req_duration p(95)` com e sem `cpu-burn`. No HyperDX:
+
+- **Metrics** → `container.cpu.throttled_time` (counter, segundos) e `container.cpu.throttled_periods`,
+  filtro `ServiceName = inventory-api`;
+- **Metrics** → `k8s.pod.cpu_limit_utilization` (kubeletstats) próximo de 1.0;
+- **Traces** → spans `POST /inventory/reservations` mais lentos.
+
+Desligue o stress:
+
+```bash
+scripts/fault.sh inventory cpu-burn 0
+```
+
+#### A.3 OOMKilled (limit de memória)
+
+```bash
+labs/lab-05/qos.sh burstable                 # limit 512Mi (mesmo resultado com guaranteed)
+scripts/fault.sh inventory memory 700        # ballast cresce 16 MiB a cada 250 ms até 700 MiB
+kubectl -n ecommerce get pods -l app.kubernetes.io/name=inventory-api -w
+```
+
+Após ~10 s o contador `RESTARTS` incrementa. Confirme o motivo:
+
+```bash
+kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api \
+  -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated.reason}{"\n"}'
+# OOMKilled
+kubectl -n ecommerce describe pod -l app.kubernetes.io/name=inventory-api | grep -A5 "Last State"
+```
+
+> O container reinicia com a configuração de falhas **padrão** (ballast = 0), então não entra em loop.
+
+**Consequência de negócio:** o estoque e as reservas vivem em memória. Após o OOMKilled:
+
+```bash
+scripts/fault.sh inventory state      # reservations_total volta a 0, estoque volta ao inicial
+```
+
+Pedidos já `CONFIRMED` no DynamoDB continuam lá, mas a Inventory "esqueceu" as reservas. Essa é a
+**limitação documentada do MVP** (sem durabilidade das reservas após restart) — não um bug escondido.
+
+#### A.4 BestEffort + vizinho barulhento (contenção)
+
+```bash
+labs/lab-05/qos.sh besteffort
+kubectl apply -f kubernetes/labs/qos/noisy-neighbor.yaml        # 2x `yes` no MESMO nó da Inventory (podAffinity), auto-encerra em 10 min
+kubectl -n loadtest get pod noisy-neighbor -o wide
+scripts/k6.sh create-orders.js RATE=5 DURATION=2m
+kubectl top pods -A --sort-by=cpu | head
+```
+
+Sem requests, a Inventory recebe o **peso mínimo de CPU** (`cpu.weight` mínimo para BestEffort) e disputa CPU
+com o vizinho em desvantagem. Observe a latência p95 e os spans de `inventory-api` no HyperDX. Depois:
+
+```bash
+kubectl -n loadtest delete pod noisy-neighbor
+```
+
+**Resumo da Parte A**
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| CPU acima do limit | `qos.sh burstable` + `fault.sh inventory cpu-burn 2` | Throttling em quase todo período; Pod **não** reinicia; p95 dos pedidos sobe | `labs/lab-05/cpu-stat.sh` (`nr_throttled` ≈ `nr_periods`); `container.cpu.throttled_time` no HyperDX; `RESTARTS` igual |
+| Memória acima do limit | `qos.sh burstable` + `fault.sh inventory memory 700` | `OOMKilled` em ~10 s; container reinicia sem a falha; estoque e reservas voltam ao inicial | `lastState.terminated.reason` = `OOMKilled`; `RESTARTS +1`; `fault.sh inventory state` (`reservations_total` = 0) |
+| BestEffort + vizinho barulhento | `qos.sh besteffort` + `noisy-neighbor.yaml` | Inventory disputa CPU com peso mínimo; latência maior, sem restart | `kubectl top pods -A --sort-by=cpu`; p95 do k6; spans `inventory-api` |
+
+### Parte B — PriorityClass & Preemption (sequência determinística)
+
+```bash
+# B.1 — ponto de partida limpo
+scripts/reset.sh
+
+# B.2 — Inventory Guaranteed (500m). A vítima precisa liberar >= 250m (request de 1 Pod da Orders);
+#        com o perfil Burstable (100m) + 100m de folga, a preempção NÃO resolveria e o scheduler não preemptaria.
+labs/lab-05/qos.sh guaranteed
+
+# B.3 — impedir que o Cluster Autoscaler adicione nós ANTES de observarmos a preempção
+kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=0
+
+# B.4 — ANTI-PATTERN INTENCIONAL: dependência transacional com prioridade baixa
+kubectl -n ecommerce patch deploy inventory-api --patch-file kubernetes/labs/priority/inventory-low-priority.patch.yaml
+kubectl -n ecommerce rollout status deploy/inventory-api
+
+# B.5 — ocupar a CPU livre dos nós apps com ballasts de prioridade critical-services (deixa 100m livres por nó)
+python3 labs/lab-05/fill-capacity.py --slack 100
+kubectl -n loadtest get pods -l app.kubernetes.io/name=capacity-ballast -o wide
+
+# B.6 — remover o HPA (senão ele "desfaz" o scale manual) e escalar a Orders API em +2 réplicas
+kubectl -n ecommerce delete hpa orders-api
+CURRENT=$(kubectl -n ecommerce get deploy orders-api -o jsonpath='{.spec.replicas}')
+kubectl -n ecommerce scale deploy orders-api --replicas=$((CURRENT + 2))
+```
+
+Em paralelo (T3), gere pedidos durante todo o experimento:
+
+```bash
+scripts/k6.sh create-orders.js RATE=5 DURATION=4m
+```
+
+E observe (T2):
+
+```bash
+kubectl get events -n ecommerce --sort-by=.lastTimestamp -w | grep -E "Preempted|FailedScheduling|Scheduled"
+# outro terminal:
+kubectl -n ecommerce get pods -o wide -w
+labs/lab-07/watch-cb.sh        # estado do Circuit Breaker por réplica da Orders
+```
+
+Sequência esperada da Parte B (2 nós `apps`, CA desligado, ballasts deixando 100m livres por nó):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as kubectl scale (+2)
+    participant S as kube-scheduler
+    participant NA as Nó A (Inventory low-priority, Guaranteed 500m)
+    participant NB as Nó B (só ballasts critical-services)
+    participant O as Orders API
+    U->>S: 2 novos Pods orders-api (critical-services 1000, request 250m)
+    S-->>S: Pending — "Insufficient cpu" (100m livres por nó)
+    S->>NA: Preemption: remove a Inventory (prioridade 100 < 1000)
+    NA-->>S: libera 500m → Orders #3 agendada no nó A
+    S-->>S: Inventory recriada pelo ReplicaSet fica Pending (não pode preemptar ninguém)
+    S-->>S: Orders #4 Pending — nó A violaria maxSkew 1, nó B sem vítimas
+    O->>O: pré-consulta/reserva sem endpoints → retries → Circuit Breaker OPEN
+    O-->>U: POST /orders → 503 DEPENDENCY_UNAVAILABLE (reason=circuit_open)
+```
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Dependência com prioridade baixa | B.2 + B.4 (Guaranteed 500m + `low-priority-services`) | Inventory `Running`, `PRIORITY` 100, `QOS` Guaranteed | `kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,QOS:.status.qosClass,PRIORITY:.spec.priorityClassName` |
+| Cluster sem folga | B.3 (CA = 0) + B.5 (`fill-capacity.py --slack 100`) | Ballasts `Running` nos 2 nós `apps`; ~100m livres por nó | `kubectl -n loadtest get pods -l app.kubernetes.io/name=capacity-ballast -o wide` |
+| Orders +2 réplicas | B.6 | Evento `Preempted` na Inventory; uma Orders nova agendada no nó dela | `kubectl get events -n ecommerce --field-selector reason=Preempted` |
+| Vítima não reagenda | — | Inventory nova `Pending` (`Insufficient cpu`; nenhuma vítima de prioridade menor) | `kubectl -n ecommerce get pods -l app.kubernetes.io/name=inventory-api` |
+| Spread impede empilhar | — | 4ª Orders `Pending`: *"didn't match pod topology spread constraints … Preemption is not helpful"* | `kubectl -n ecommerce describe pod <orders Pending>` |
+| Impacto no negócio | k6 em T3 | `POST /orders` `201` → ~0%; `503 DEPENDENCY_UNAVAILABLE`; CB `OPEN` em cada réplica | saída do k6; `labs/lab-07/watch-cb.sh`; `circuit_breaker.state` = 2 no HyperDX |
 
 ## 6. Falha provocada
 
-| Alerta | Falha | Comando |
-|---|---|---|
-| Orders Creation Errors | reserva falha → Orders 503 | `fault.sh inventory http-503 RESERVATIONS` |
-| Inventory Creation Errors | reserva 503 na Inventory | `fault.sh inventory http-503 RESERVATIONS` |
-| Orders Query Errors | leituras DynamoDB falham | `fault.sh orders db FAIL_READS` |
-| Inventory Query Errors | `GET /inventory/{sku}` 503 (precheck) | `fault.sh inventory http-503 QUERIES` |
-| *(falha invisível)* | crash do processo | `fault.sh orders crash-after-reservation` |
+- **Parte A:** CPU throttling (`cpu-burn 2` contra limit 500m), OOMKilled (`memory 700` contra limit 512Mi),
+  contenção de CPU (BestEffort + `noisy-neighbor`).
+- **Parte B:** falta de capacidade de scheduling para Pods `critical-services` com a dependência transacional
+  configurada como `low-priority-services` e o Cluster Autoscaler desligado.
 
 ## 7. Observações
 
-**Logs** — uma requisição que falha gera, na mesma `request_id`, **dois** logs ERROR:
+**Parte A**
 
-| Serviço | Log contextual (ERROR, `http.response.status_code=503`) | Log de conclusão |
+| Experimento | Onde observar | O que esperar |
 |---|---|---|
-| orders-api `POST /orders` | `Inventory API indisponível` | `HTTP request completed` |
-| orders-api `GET /orders` | `DynamoDB indisponível ao listar pedidos` | `HTTP request completed` |
-| inventory-api | `Falha injetada: respondendo HTTP 503` | `HTTP request completed` |
+| Throttling | `cpu-stat.sh`, métrica `container.cpu.throttled_time` | `nr_throttled` crescendo quase 1:1 com `nr_periods`; Pod **não** reinicia; latência sobe |
+| OOMKilled | `lastState.terminated.reason`, evento `BackOff`/restart, `k8s.container.restarts` | Container morto pelo kernel, `RESTARTS+1`, estado em memória perdido |
+| Contenção BestEffort | `kubectl top`, p95 k6, spans `inventory-api` | Latência maior; nenhuma garantia de CPU |
 
-Já o limite de concorrência da Inventory (`TOO_MANY_CONCURRENT_REQUESTS`) gera só **um** — a razão logs/requisições
-varia conforme o **caminho do código**, não conforme o impacto no usuário.
+**Parte B** — linha do tempo típica:
 
-Busque no HyperDX (source Logs) e abra o trace a partir de um log:
+1. Novos Pods `orders-api` ficam `Pending` (`FailedScheduling: Insufficient cpu`).
+2. O scheduler identifica a Inventory (prioridade 100) como vítima no nó onde ela roda: evento
+   `Preempted` — *"Preempted by pod … on node …"*. O Pod da Orders é agendado nesse nó (`nominatedNodeName`).
+3. A Inventory é recriada pelo ReplicaSet e fica `Pending`: não há espaço e ela **não pode** preemptar ninguém
+   (todos os demais são `critical-services` ou `system-*`).
+4. O outro novo Pod da Orders continua `Pending`. O topology spread da Orders (`maxSkew: 1` por nó, LAB 04) exige
+   que ele vá para o **outro** nó, que está cheio de ballasts `critical-services` (sem vítimas):
+   *"0/3 nodes are available: 1 Insufficient cpu, 1 node(s) didn't match pod topology spread constraints … preemption:
+   … Preemption is not helpful for scheduling"*.
+5. Os pedidos começam a falhar: a pré-consulta/reserva da Inventory falha (sem endpoints → erro de transporte) →
+   retries → **Circuit Breaker OPEN** em cada réplica → `503 DEPENDENCY_UNAVAILABLE` com `reason=circuit_open`.
+   O k6 mostra `POST /orders 201` caindo para ~0%.
 
-```text
-ServiceName:"orders-api" LogAttributes.level:"ERROR" LogAttributes.http.route:"/orders"
-```
+No HyperDX:
 
-**Correlação com o negócio** — os logs carregam `request_id`, `trace_id`, `span_id`, `idempotency.key`, `order.id`,
-`idempotency.status`, `idempotency.attempts`, `reservation.state`, `dependency.reason`. Todas as tentativas de um mesmo
-pedido podem ser agrupadas por `idempotency.key`:
-
-```text
-ServiceName:"orders-api" LogAttributes.idempotency.key:"<chave>"
-```
-
-**Métricas de negócio** (source Metrics): `orders.failed` por `reason` (`inventory_http_503`, `inventory_circuit_open`,
-`dynamodb_unavailable`, …), `orders.created`, `inventory.reservations.failed` por `reason`, `inventory.faults.injected`
-por `fault.type`.
+- **Logs** (source Logs): eventos Kubernetes coletados pelo gateway (`k8sobjects`) — busque `Preempted` e
+  `FailedScheduling`;
+- **Logs**: `ServiceName:"orders-api" Body:"Circuit breaker transition"` e `Body:"Inventory API indisponível"`;
+- **Metrics**: `k8s.pod.phase` (Pending = 1), `circuit_breaker.state` (2 = OPEN), `orders.failed` por `reason`.
 
 ## 8. Explicação técnica
 
-`COUNT(logs)` mede **quantas linhas** o código escreveu, não **quantas requisições** falharam:
+**QoSClass** é derivada automaticamente dos `resources`:
 
-- **Superestimação** — log contextual + log de conclusão + eventual stack trace = N logs por requisição.
-  O fator muda quando alguém adiciona/remove um `log.error`, sem nenhuma mudança no impacto ao cliente.
-- **Subestimação** — falhas sem log ERROR: crash/OOMKilled do processo, timeout no cliente (BFF 504) enquanto a Orders
-  conclui com 201, perda de logs no pipeline (fila do exporter cheia), nível errado (`CRITICAL`/`WARN`).
-- **Sem denominador** — "≥ 5 logs" não diz se isso é 5 de 10 ou 5 de 100 000 requisições. Alertas devem olhar
-  **taxa de erro** (e, idealmente, consumo de error budget — fase 2).
-- **Custo/cardinalidade** — logs são amostrados, filtrados ou descartados em produção; métricas HTTP não.
+| QoS | Regra | `oom_score_adj` | Eviction por pressão do nó |
+|---|---|---|---|
+| BestEffort | nenhum request/limit | 1000 (primeiro a morrer) | primeiro candidato |
+| Burstable | algum request, não todos iguais aos limits | 2–999 (proporcional) | quem usa acima do request primeiro |
+| Guaranteed | requests == limits para CPU e memória em todos os containers | -997 | último candidato |
 
-**Implementação recomendada (fase 2, não implementada no MVP):**
+Três mecanismos **diferentes**:
 
-- Métrica `http.server.request.duration` (histograma OTel, não amostrada) agregada por `service.name`,
-  `http.request.method`, `http.route`, `http.response.status_code`: `rate(5xx) / rate(total)`.
-- Ou spans `SpanKind=Server` agregados por rota/status — **desde que** o sampling seja 100% ou a amostragem seja
-  compensada (o MVP usa 100%).
-- Alertar em **taxa** (ex.: > 5% em 5 min com mínimo de tráfego) em vez de contagem absoluta.
+- **CPU throttling** — o CFS aplica a cota `cpu.max` (limit). O processo é *pausado* até o próximo período;
+  nada é morto. CPU é um recurso **comprimível**.
+- **OOMKilled** — o uso de memória do cgroup do container atinge `memory.max` (limit) e o **kernel** mata o
+  processo. Acontece mesmo com o nó folgado. Memória é **incompressível**.
+- **Eviction** — o **kubelet** detecta pressão no **nó** (ex.: `memory.available` abaixo do threshold) e remove Pods
+  inteiros, ordenando por uso acima do request, prioridade e QoS. Pode acontecer sem nenhum limit atingido.
+
+**PriorityClass** age no **scheduler**: quando um Pod não cabe, o scheduler procura nós onde remover Pods de
+prioridade **estritamente menor** libere recursos suficientes (preemption). QoS não entra nessa conta — por isso
+um Pod `Guaranteed` de prioridade 100 foi removido. Prioridade **igual** nunca preempta (por isso os ballasts
+`critical-services` e as outras réplicas da Orders ficaram intocados).
+
+O perfil Guaranteed (500m) foi necessário para a preempção acontecer: a vítima precisa liberar recursos
+suficientes para o Pod pendente (250m da Orders). Com 100m livres + 100m da Inventory Burstable = 200m < 250m,
+o scheduler não teria vítima válida.
+
+| Pergunta | Quem responde |
+|---|---|
+| Quem sofre primeiro quando o **nó** está sem CPU/memória? | QoS (requests/limits) |
+| Quem é **agendado** primeiro / quem é **removido** quando falta capacidade de scheduling? | PriorityClass |
+
+O anti-pattern: a prioridade deve refletir a **criticidade do fluxo de negócio**, não a "importância percebida"
+do serviço. Uma dependência síncrona do caminho crítico tem, no mínimo, a mesma prioridade de quem a chama.
 
 ## 9. Correção
 
-No MVP a correção é **demonstrada**, não implementada: execute `labs/lab-05/compare-counts.sh` e mostre que (c) e (d)
-batem com o número real de requisições com erro (k6 `http_req_failed`), enquanto (a) não. A troca dos alertas para
-métricas/spans HTTP é escopo da **fase 2**.
+```bash
+# 1. Dependência transacional com a mesma prioridade do caminho crítico
+kubectl -n ecommerce patch deploy inventory-api --patch-file kubernetes/labs/priority/inventory-restore-priority.patch.yaml
+
+# 2. Capacidade: reativar o Cluster Autoscaler
+kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=1
+```
+
+O novo Pod da Inventory (prioridade 1000) **não** consegue preemptar ninguém (todos têm prioridade igual ou
+maior) — ele fica `Pending` e isso dispara o **Cluster Autoscaler**, que adiciona um nó `apps` (2–4 min).
+A Inventory é agendada, o Circuit Breaker passa por `HALF_OPEN` → `CLOSED`, e os pedidos voltam a `201`.
 
 ```bash
-scripts/fault.sh all reset
+kubectl -n kube-system logs deploy/cluster-autoscaler-aws-cluster-autoscaler --since=10m | grep -iE "scale-up|ScaleUp"
+kubectl get nodes -l workload=apps -w
 ```
+
+Correção de QoS (Parte A): manter a Inventory **Burstable** com requests realistas (ou Guaranteed se a latência
+for crítica), limit de memória dimensionado pelo uso real + margem, e **não** depender de estado em memória em
+produção (fase 2: estado compartilhado/durável).
 
 ## 10. Validação
 
-```bash
-kubectl -n observability exec deploy/alert-webhook -- python -c "
-import json, urllib.request
-d = json.load(urllib.request.urlopen('http://127.0.0.1:8080/alerts'))
-print(sorted({a['payload'].get('alert', '').replace('🚨 ', '') for a in d['alerts']}))"
-# ['Inventory Creation Errors', 'Inventory Query Errors', 'Orders Creation Errors', 'Orders Query Errors']
-labs/lab-05/compare-counts.sh 30
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Prioridade corrigida | patch `inventory-restore-priority` (seção 9) | Inventory nova com prioridade 1000 fica `Pending` (não preempta prioridade igual) | `kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api -o wide` |
+| Capacidade restaurada | CA = 1 (seção 9) | CA adiciona um nó `apps` em 2–4 min; Inventory `Running` | `kubectl get nodes -l workload=apps -w`; logs do CA (`scale-up`) |
+| Recuperação do fluxo | — | CB `HALF_OPEN` → `CLOSED` em todas as réplicas; pedidos voltam a `201` | `scripts/fault.sh orders cb`; k6 com `http_req_failed < 5%` |
+| Evidência da preempção | — | Evento `Preempted` da Inventory registrado | `kubectl get events -n ecommerce --field-selector reason=Preempted` |
+
+```mermaid
+flowchart LR
+    F1["Inventory → critical-services (1000)"] --> F2["Pod novo Pending<br/>(não preempta prioridade igual)"]
+    F2 --> F3["Cluster Autoscaler (replicas=1)<br/>cria nó apps em 2–4 min"]
+    F3 --> F4["Inventory Running"] --> F5["CB HALF_OPEN → CLOSED"] --> F6["POST /orders 201"]
 ```
 
-Após remover as falhas, os alertas voltam a `OK` na UI quando a janela de 5 min deixa de ter ≥ 5 logs
-(o webhook recebe notificações `resolved`, se habilitadas para o alerta).
+```bash
+kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api \
+  -o custom-columns=POD:.metadata.name,STATUS:.status.phase,QOS:.status.qosClass,PRIORITY:.spec.priority
+# STATUS=Running  PRIORITY=1000
+kubectl get events -n ecommerce --field-selector reason=Preempted
+scripts/fault.sh orders cb             # todas as réplicas: "state": "CLOSED"
+scripts/k6.sh create-orders.js RATE=5 DURATION=1m   # thresholds OK (http_req_failed < 5%)
+```
 
 ## 11. Challenge
 
-1. Explique por que `uniqExact(request_id)` (b) bate com os spans (c), mas também não é a métrica ideal para alertar.
-2. Provoque `504` na BFF com sucesso na Orders: `scripts/fault.sh bff timeout 200` + `scripts/fault.sh orders cpu-work 400`.
-   Quais alertas disparam? O cliente percebeu falha? O pedido foi criado? (Dica: retry com a mesma chave → replay.)
-3. Escreva (sem aplicar) a query SQL de **taxa** de erro 5xx de `POST /orders` a partir de `otel_metrics_histogram`.
-4. Qual seria o efeito de um sampling de traces de 10% sobre a consulta (c)?
+1. **Eviction controlada (opcional):** com `labs/lab-05/qos.sh besteffort`, eleve a pressão de memória no nó:
+   `scripts/fault.sh inventory memory 2048` (teto `INVENTORY_MEMORY_STRESS_MAX_MB=2048` — a carga é limitada por
+   design). Repita junto com `kubectl apply -f kubernetes/labs/qos/noisy-neighbor.yaml`. Observe `kubectl describe node`
+   (condição `MemoryPressure`) e os eventos `Evicted`. Discuta: em nós com pouca memória livre, o **OOM killer do
+   kernel** pode agir antes da eviction do kubelet (que avalia a cada ~10 s); como o `oom_score_adj` do BestEffort é
+   1000, ele morre primeiro de qualquer forma. Com 2048 MiB num `m6i.large` a eviction pode **não** ocorrer — explique
+   por quê (allocatable × uso real × threshold `memory.available`).
+2. Por que o HPA precisou ser removido na Parte B? O que aconteceria com `minReplicas` maior que a capacidade?
+3. Qual seria o efeito de `preemptionPolicy: Never` na `critical-services`?
+4. Proponha um `PodDisruptionBudget` para a Inventory (fase 2). Ele impediria a preempção? (Dica: PDB é
+   respeitado em *best effort* pelo scheduler na preempção.)
 
 ## 12. Critérios de sucesso
 
-- [ ] Os quatro alertas entraram em `ALERT` e o webhook registrou as quatro notificações.
-- [ ] `compare-counts.sh` mostrou (a) ≈ 2 × (b) = (c) para as rotas com log contextual.
-- [ ] Falha por crash demonstrada sem log ERROR correspondente (consulta (e) > 0).
-- [ ] Um erro foi correlacionado de ponta a ponta (log → `trace_id` → trace → `idempotency.key` → `order.id`).
-- [ ] O aluno explica o anti-pattern e a correção da fase 2.
+- [ ] Os três perfis produziram `BestEffort`, `Burstable` e `Guaranteed` em `.status.qosClass`.
+- [ ] `nr_throttled` cresceu com `cpu-burn 2` e o Pod **não** reiniciou.
+- [ ] `lastState.terminated.reason = OOMKilled` com `memory 700` e o estado em memória foi perdido.
+- [ ] Evento `Preempted` para a Inventory API registrado, com a Orders agendada no lugar.
+- [ ] Pedidos falharam com `503 DEPENDENCY_UNAVAILABLE` e Circuit Breaker `OPEN` durante a preempção.
+- [ ] Após a correção: Inventory `Running` com prioridade 1000, CB `CLOSED`, pedidos `201`.
+- [ ] O aluno explica a diferença entre throttling, OOMKilled, eviction e preemption.
 
 ## 13. Reset
 
 ```bash
-scripts/fault.sh all reset
-scripts/reset.sh
+kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast --ignore-not-found
+kubectl -n loadtest delete pod noisy-neighbor --ignore-not-found
+scripts/reset.sh        # perfil Burstable, Inventory de volta a critical-services, reaplica HPA, CA=1, limpa falhas
+kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,QOS:.status.qosClass,PRIORITY:.spec.priorityClassName
 ```
 
-Os alertas e o webhook permanecem configurados (fazem parte da infraestrutura do workshop). O receptor guarda os
-últimos 200 payloads em memória; para zerá-lo: `kubectl -n observability rollout restart deploy/alert-webhook`.
+Nós extras criados pelo Cluster Autoscaler são removidos automaticamente após ~2 min ociosos
+(`scale-down-unneeded-time=2m`).

@@ -141,7 +141,7 @@ O preset `kubernetesEvents` do `otel-gateway` usa o receiver `k8sobjects`, que e
 - **SQL:** Q21.
 - **Logs do Cluster Autoscaler** (coletados pelo filelog do `otel-agent`): `ResourceAttributes.k8s.namespace.name:"kube-system" "scale-up"`.
 
-### Anti-pattern dos alertas (LAB 05)
+### Anti-pattern dos alertas (LAB X1)
 
 - **Q22** compara `count()` com `uniqExact(request_id)` para os logs ERROR com status 5xx. Na validação local, POST /orders da Orders API teve 678 logs ERROR para 339 requisições com falha (2×).
-- O script `labs/lab-05/compare-counts.sh` executa a comparação completa: logs, requisições distintas, spans e métricas.
+- O script `labs/.extras/lab-x1/compare-counts.sh` executa a comparação completa: logs, requisições distintas, spans e métricas.

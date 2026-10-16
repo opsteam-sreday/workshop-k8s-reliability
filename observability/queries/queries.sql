@@ -183,7 +183,7 @@ WHERE Timestamp > now() - INTERVAL 30 MINUTE
        OR Body ILIKE '%TriggeredScaleUp%' OR Body ILIKE '%Evicted%' OR Body ILIKE '%BackOff%')
 ORDER BY Timestamp DESC LIMIT 50;
 
--- [Q22] Anti-pattern (LAB 05): COUNT(logs ERROR) vs requisições distintas por rota
+-- [Q22] Anti-pattern (LAB X1): COUNT(logs ERROR) vs requisições distintas por rota
 SELECT ServiceName, LogAttributes['http.request.method'] AS method, LogAttributes['http.route'] AS route,
        count() AS error_logs, uniqExact(LogAttributes['request_id']) AS distinct_requests
 FROM otel_logs

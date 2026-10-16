@@ -15,21 +15,21 @@ Todos os laboratórios seguem o mesmo ciclo:
 | `bash`, `python3`, `curl` | scripts do workshop |
 | Navegador | HyperDX (UI do ClickStack) |
 
-**Turma com um ambiente por aluno.** O instrutor envia o seu `STUDENT_ID` (ex.: `aluno07`) e um bloco para o
+**Turma com um ambiente por aluno.** O instrutor envia o seu `CLUSTER_ID` (ex.: `aluno07`) e um bloco para o
 `~/.aws/config`. Você entra pelo SSO e assume a **sua** role, que só enxerga o seu cluster `rw-<id>`, a sua tabela
 `rw-<id>-orders` e as suas credenciais do HyperDX:
 
 ```bash
 aws sso login --profile workshop-sso
-export AWS_PROFILE=workshop STUDENT_ID=aluno07       # use o seu ID
+export AWS_PROFILE=workshop CLUSTER_ID=aluno07       # use o seu ID
 aws sts get-caller-identity                          # assumed-role/rw-aluno07-student/...
-aws eks update-kubeconfig --name rw-$STUDENT_ID --region us-east-1
+aws eks update-kubeconfig --name rw-$CLUSTER_ID --region us-east-1
 make hyperdx-credentials-pull                        # login do HyperDX do seu ambiente
 kubectl get nodes -L workload                        # nós "apps" e "observability"
 kubectl -n ecommerce get pods                        # bff-api, orders-api, inventory-api
 ```
 
-Com `STUDENT_ID` exportado, os scripts e o `make` usam automaticamente os seus nomes (`CLUSTER_NAME=rw-<id>`,
+Com `CLUSTER_ID` exportado, os scripts e o `make` usam automaticamente os seus nomes (`CLUSTER_NAME=rw-<id>`,
 `TABLE_NAME=rw-<id>-orders`, role `rw-<id>-orders-api`); sem ele, os scripts param pedindo o ID. Os nomes
 derivados estão em `scripts/lib/common.sh`.
 
@@ -160,7 +160,7 @@ scripts/fault.sh all reset
 kubectl -n ecommerce get hpa,pods -o wide
 kubectl get events -A --sort-by=.lastTimestamp | tail -20
 kubectl -n ecommerce top pods
-labs/lab-04/watch-cb.sh
+labs/lab-07/watch-cb.sh
 
 # Reset entre laboratórios
 scripts/reset.sh
@@ -186,11 +186,14 @@ scripts/reset.sh
 ## 7. Laboratórios (nesta ordem)
 
 1. [LAB 01 — First Successful Order](../labs/lab-01/README.md): pedido, reserva, DynamoDB, Pod Identity, trace e idempotência.
-2. [LAB 02 — CPU Stress & Autoscaling](../labs/lab-02/README.md): HPA, Pods Pending e Cluster Autoscaler.
-3. [LAB 03 — QoS & PriorityClass](../labs/lab-03/README.md): throttling, OOMKilled, eviction e preemption.
-4. [LAB 04 — Circuit Breaker](../labs/lab-04/README.md): timeout, retry, OPEN, HALF_OPEN e CLOSED.
-5. [LAB 05 — ClickStack Alerting](../labs/lab-05/README.md): quatro alertas e o anti-pattern de contagem de logs.
-6. [LAB 06 — Probes, Graceful Shutdown & Topology Spread](../labs/lab-06/README.md): readiness × liveness × startup, rollout sem erro, deploy quebrado e drain de nó.
+2. [LAB 02 — Probes & Graceful Shutdown](../labs/lab-02/README.md): readiness × liveness × startup, rollout sem erro, deploy quebrado e anti-cascata.
+3. [LAB 03 — RollingUpdate & PodDisruptionBudget](../labs/lab-03/README.md): estratégias de rollout, Recreate e o que a PDB protege (e o que não).
+4. [LAB 04 — Affinity, Anti-affinity & Topology Spread](../labs/lab-04/README.md): onde os Pods rodam, regras required × preferred e drain de nó.
+5. [LAB 05 — QoS & PriorityClass](../labs/lab-05/README.md): throttling, OOMKilled, eviction e preemption.
+6. [LAB 06 — CPU Stress & Autoscaling](../labs/lab-06/README.md): HPA, Pods Pending e Cluster Autoscaler.
+7. [LAB 07 — Circuit Breaker](../labs/lab-07/README.md): timeout, retry, OPEN, HALF_OPEN e CLOSED.
+
+Extra (fora da agenda): [LAB X1 — ClickStack Alerting](../labs/.extras/lab-x1/README.md): quatro alertas e o anti-pattern de contagem de logs.
 
 Execute `scripts/reset.sh` ao terminar cada laboratório.
 

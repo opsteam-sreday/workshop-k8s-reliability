@@ -1,0 +1,10 @@
+# LAB 04 A1 — nodeAffinity REQUIRED para uma zona onde não existe nó: o Pod novo nunca é agendado.
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: topology.kubernetes.io/zone, operator: In, values: [zona-inexistente]}

@@ -1,0 +1,12 @@
+# LAB 04 C — podAntiAffinity PREFERRED por nó: espalha quando pode, empilha quando não há nó livre (não bloqueia).
+spec:
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector: {matchLabels: {app.kubernetes.io/name: orders-api}}
+                matchLabelKeys: [pod-template-hash]

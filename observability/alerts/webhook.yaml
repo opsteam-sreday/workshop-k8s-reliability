@@ -1,4 +1,4 @@
-# Receptor de webhooks do LAB 05 (namespace observability). O código está em
+# Receptor de webhooks do LAB X1 (namespace observability). O código está em
 # observability/alerts/webhook/receiver.py e é montado via ConfigMap (gerado pelo setup.sh).
 apiVersion: apps/v1
 kind: Deployment

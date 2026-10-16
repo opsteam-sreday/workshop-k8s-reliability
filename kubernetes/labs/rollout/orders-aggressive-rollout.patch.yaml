@@ -1,0 +1,8 @@
+# ANTI-PATTERN INTENCIONAL (LAB 03, parte B): troca todas as réplicas da Orders de uma vez.
+# maxSurge 0 = nenhum Pod novo antes de derrubar os antigos; maxUnavailable 100% = todos podem ficar indisponíveis.
+# Só muda a estratégia (não reinicia Pods): o lab dispara o rollout com `kubectl rollout restart`.
+# Reverter: orders-safe-rollout.patch.yaml (ou `kubectl apply -k` do overlay, que tem maxSurge 1 / maxUnavailable 0).
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 0, maxUnavailable: "100%"}

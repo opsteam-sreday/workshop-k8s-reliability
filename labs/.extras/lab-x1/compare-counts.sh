@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# LAB 05 — compara, para os últimos N minutos, três formas de "contar erros" da Orders API:
+# LAB X1 — compara, para os últimos N minutos, três formas de "contar erros" da Orders API:
 #   (a) COUNT(logs ERROR)        -> o que os alertas do MVP usam (anti-pattern)
 #   (b) requisições distintas    -> uniqExact(request_id) dos logs ERROR
 #   (c) spans HTTP SERVER 5xx    -> verdade operacional por rota/status
 #   (d) métrica http.server.request.duration (count de 5xx)
-source "$(dirname "$0")/../../scripts/lib/common.sh"
+source "$(dirname "$0")/../../../scripts/lib/common.sh"
 source "$REPO_ROOT/scripts/lib/cluster-helpers.sh"
 MIN="${1:-15}"
 echo "== (a) COUNT(logs ERROR) por serviço/rota (janela ${MIN} min)"

@@ -1,4 +1,4 @@
-// Rampa de carga para o LAB 02 (HPA + Cluster Autoscaler).
+// Rampa de carga para o LAB 06 (HPA + Cluster Autoscaler).
 // Variáveis: BASE_URL, RATE (pico req/s, padrão 60), DURATION (platô, padrão 6m), RAMP (padrão 1m),
 //            VUS (pré-alocados, padrão 50), HTTP_TIMEOUT
 import { sleep } from 'k6';

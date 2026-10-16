@@ -76,7 +76,7 @@ run "Criar o namespace observability" \
   "Namespace do ClickStack, dos OpenTelemetry Collectors e do webhook de alertas (dry-run + apply = idempotente)." \
   bash -c 'kubectl create namespace observability --dry-run=client -o yaml | kubectl apply -f -'
 run "Criar as PriorityClasses" \
-  "critical-services (1000) para BFF/Orders/Inventory e low-priority-services (100), usada no anti-pattern do LAB 03. Elas definem quem é agendado primeiro e quem pode ser preemptado quando falta capacidade." \
+  "critical-services (1000) para BFF/Orders/Inventory e low-priority-services (100), usada no anti-pattern do LAB 05. Elas definem quem é agendado primeiro e quem pode ser preemptado quando falta capacidade." \
   kubectl apply -f "$REPO_ROOT/kubernetes/platform/priorityclasses.yaml"
 
 # ---------------------------------------------------------------- 4. Helm repos
@@ -155,7 +155,7 @@ run "Implantar o receptor de webhooks" "O HyperDX enviará os alertas para http:
 run "Aguardar o receptor" "Readiness em /healthz." \
   kubectl -n observability rollout status deploy/alert-webhook --timeout=3m
 run "Criar webhook, saved searches e os 4 alertas no HyperDX" \
-  "Via External API v2. Cada alerta conta logs ERROR por serviço/rota (≥5 em 5 min) — um ANTI-PATTERN INTENCIONAL que o LAB 05 desmonta: uma requisição pode gerar vários logs e outra pode falhar sem log nenhum." \
+  "Via External API v2. Cada alerta conta logs ERROR por serviço/rota (≥5 em 5 min) — um ANTI-PATTERN INTENCIONAL que o LAB X1 desmonta: uma requisição pode gerar vários logs e outra pode falhar sem log nenhum." \
   python3 "$REPO_ROOT/observability/alerts/create_alerts.py" --app-url "http://localhost:${HDX_APP_PORT}" \
     --api-url "http://localhost:${HDX_API_PORT}" --creds "$STATE_DIR/hyperdx-credentials.json" \
     --webhook-url "http://alert-webhook.observability.svc.cluster.local:8080/alerts"

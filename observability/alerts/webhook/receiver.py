@@ -2,7 +2,7 @@
 """Receptor de webhooks de laboratório (somente stdlib).
 
 POST /alerts  -> registra o payload (log JSON em stdout) e guarda os últimos 200 em memória.
-GET  /alerts  -> lista os alertas recebidos (usado por scripts/validate.sh e LAB 05).
+GET  /alerts  -> lista os alertas recebidos (usado por scripts/validate.sh e LAB X1).
 GET  /healthz -> health check.
 """
 

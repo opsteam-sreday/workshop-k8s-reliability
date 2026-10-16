@@ -1,432 +1,354 @@
-# LAB 06 — Probes, Graceful Shutdown & Topology Spread
+# LAB 06 — CPU Stress & Autoscaling
 
 > **Break it → Observe it → Understand it → Fix it → Validate it**
 >
-> Duração estimada: 55 min · Partes A–D (probes) ≈ 40 min · Parte E (topology spread) ≈ 15 min
+> Duração estimada: 40–50 min (o scale-out de nós leva alguns minutos).
 
 ---
 
 ## 1. Cenário
 
-As três APIs expõem **três** health checks com papéis diferentes:
+Uma campanha de marketing multiplica o tráfego de criação de pedidos. Cada pedido consome CPU na Orders API (validação, cálculo, serialização). O time confia em "o Kubernetes escala sozinho".
 
-| Probe | Rota | Pergunta | O que o kubelet faz quando falha |
-|---|---|---|---|
-| **startup** | `/health/startup` | a inicialização terminou? | segura as outras probes; depois de 60 × 2 s = **120 s**, reinicia |
-| **readiness** | `/health/ready` | esta réplica pode receber tráfego agora? | **tira o Pod do Service** (2 falhas × 5 s), sem reiniciar |
-| **liveness** | `/health/live` | o processo está respondendo? | **reinicia o container** (3 falhas × 10 s, timeout de 3 s) |
+Ele escala — mas em **duas camadas diferentes**, com **tempos diferentes** e **limites diferentes**:
 
-Neste lab você faz cada probe falhar **de propósito**, em uma réplica, e observa o que o Kubernetes faz com o
-tráfego e com o container. Para isso, a API admin (só `127.0.0.1`, via `kubectl exec`) tem duas falhas:
+```text
+carga ↑ ──► CPU ↑ ──► HPA aumenta réplicas (segundos) ──► sem espaço nos nós ──► Pods Pending
+                                                                     │
+                                         Cluster Autoscaler adiciona nós (minutos) ◄┘
+```
 
-| Comando | O que faz dentro do Pod | `/health/ready` | `/health/live` |
-|---|---|---|---|
-| `scripts/fault.sh orders not-ready <pod>` | liga a flag `forced_not_ready` | **503** | **200** |
-| `scripts/fault.sh orders freeze <s> <pod>` | `time.sleep(<s>)` síncrono **dentro do event loop**: o processo para de atender tudo | sem resposta (timeout) | sem resposta (timeout) |
+Fluxo completo do lab, com os tempos configurados (`hpa.yaml`, `cluster-autoscaler-values.yaml`, `stress-orders.js`):
 
-> Por que não `kill -STOP 1`? O Linux protege o PID 1 de um container: `SIGSTOP` enviado de dentro do próprio
-> container é ignorado. O `freeze` reproduz o mesmo efeito (processo vivo, mas travado).
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K6 as k6 (nó observability)
+    participant ORD as Orders API
+    participant MS as Metrics Server
+    participant HPA as HPA orders-api
+    participant SCH as Scheduler
+    participant CA as Cluster Autoscaler
+    participant ASG as Node group apps (2..5)
 
-Probes protegem contra uma **réplica** com problema. Contra a perda de um **nó**, as APIs usam
-`topologySpreadConstraints` (`kubernetes/apps/*/deployment.yaml`): no máximo **1 réplica de diferença** entre os
-nós `apps` (`maxSkew: 1`, `topologyKey: kubernetes.io/hostname`, `whenUnsatisfiable: DoNotSchedule`). A parte E
-mostra a regra em ação: quando ela bloqueia, quando ela não ajuda e por que ela não rebalanceia sozinha.
+    K6->>ORD: POST /orders, rampa 1 min até 60 req/s, platô 6 min
+    ORD->>ORD: ~40 ms de CPU por pedido (ORDERS_CPU_WORK_MS=40)
+    MS->>HPA: uso de CPU por Pod
+    HPA->>HPA: "utilização = uso ÷ requests (250m) ≫ 60%"
+    HPA->>SCH: "replicas: 2 → … → 12 (degraus a cada 15 s)"
+    SCH-->>SCH: "réplicas sem espaço ficam Pending (Insufficient cpu)"
+    CA->>SCH: detecta Pods Pending
+    CA->>ASG: "scale-up 2 → 3+ (máx. 5)"
+    ASG-->>SCH: "nó novo Ready em ≈2–4 min"
+    SCH->>ORD: Pods Pending agendados no nó novo
+    K6-->>ORD: carga termina (≈7,5 min)
+    HPA->>HPA: "espera 120 s, depois −50% a cada 30 s até 2"
+    CA->>ASG: "nó subutilizado (< 50%) por 2 min → removido"
+```
 
 ## 2. Hipótese
 
-1. Com **readiness** falhando e liveness OK, o Pod sai do tráfego em ~10 s e **nunca** é reiniciado.
-2. Com o processo **travado**, o Pod primeiro sai do tráfego (readiness) e, ~30 s depois, é **reiniciado** (liveness).
-3. Um **rollout** sob carga não gera erros: no `SIGTERM` a réplica deixa de ficar pronta e espera 5 s antes de parar.
-4. Um deploy com configuração errada **não derruba o serviço**: o Pod novo nunca fica pronto, o rollout não avança e
-   as réplicas antigas continuam atendendo.
-5. Com a **Inventory fora do ar**, a Orders **continua pronta** (a readiness não verifica dependências): o erro
-   aparece como `503 DEPENDENCY_UNAVAILABLE`, não como Pods `NotReady`.
-6. Com `maxSkew: 1` rígido, uma réplica fica `Pending` em vez de ir para um nó que já tem uma a mais — **mesmo que
-   esse nó tenha CPU livre**. E o spread só vale **no agendamento**: depois de um drain, as réplicas não voltam
-   sozinhas para o nó recuperado.
+> "Sob carga de CPU, o HPA aumentará as réplicas da Orders API com base em `requests.cpu`. Quando as réplicas desejadas não couberem nos nós existentes, Pods ficarão `Pending` (`FailedScheduling`) e o Cluster Autoscaler adicionará nós ao node group `apps` até acomodá-los. Quando a carga parar, ambos reduzem a capacidade — com atraso intencional."
 
 ## 3. Pré-requisitos
 
-- LAB 01 concluído; `scripts/reset.sh` executado.
-- `export STUDENT_ID=<seu id>` (ex.: `aluno07`) e kubectl apontando para o seu cluster.
-- **4 terminais** abertos na raiz do repositório (todos com o mesmo `STUDENT_ID`).
+- LAB 01 concluído (`scripts/validate.sh` sem ❌).
+- Dois terminais livres (um para o painel, outro para os comandos).
+- Opcional: HyperDX aberto (`kubectl -n observability port-forward svc/clickstack-app 3000:3000`).
 
 ## 4. Estado inicial
 
 ```bash
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api
-scripts/fault.sh orders health
+scripts/reset.sh
+kubectl -n ecommerce get hpa orders-api
+kubectl get nodes -l workload=apps
+kubectl top nodes
+kubectl -n kube-system get deploy cluster-autoscaler-aws-cluster-autoscaler
 ```
 
-Esperado: 2 réplicas `1/1`, `RESTARTS 0`, e em cada Pod
-`{"started":true,"shutting_down":false,"forced_not_ready":false}`.
+Esperado: HPA `orders-api` com `MINPODS 2`, `MAXPODS 12`, alvo `cpu: <x>%/60%`; **2 nós** `apps` (m6i.large); Metrics Server respondendo; Cluster Autoscaler `1/1`.
 
-Escolha **uma** réplica como alvo e guarde o nome nos terminais 1, 2 e 4:
+Revise a configuração que será exercitada:
 
 ```bash
-export POD=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api -o jsonpath='{.items[0].metadata.name}')
-echo $POD
+cat kubernetes/apps/orders-api/hpa.yaml
+kubectl -n ecommerce get deploy orders-api -o jsonpath='{.spec.template.spec.containers[0].resources}'; echo
+grep -E "scale-down|expander|new-pod" infrastructure/cluster-autoscaler-values.yaml
+```
+
+| Parâmetro | Valor |
+|---|---|
+| Orders API `requests.cpu` / `limits.cpu` | `250m` / `1000m` |
+| HPA alvo | `averageUtilization: 60` (= 150m por Pod) |
+| HPA scaleUp | `stabilizationWindowSeconds: 0`; máx(100% ou +4 Pods) a cada 15 s |
+| HPA scaleDown | `stabilizationWindowSeconds: 120`; no máximo −50% a cada 30 s |
+| Node group `apps` | min 2 / max 5 × `m6i.large` (2 vCPU, ~1,9 vCPU alocável) |
+| Cluster Autoscaler | `scale-down-unneeded-time=2m`, `scale-down-delay-after-add=2m`, `expander=least-waste` |
+
+No **terminal 1**, abra o painel (atualiza a cada 5 s):
+
+```bash
+labs/lab-06/watch.sh
 ```
 
 ## 5. Comandos executáveis
 
-Deixe rodando durante todo o lab:
+**Terminal 2.** Ative o custo de CPU por requisição na Orders API:
 
 ```bash
-# Terminal 1 — painel do Pod-alvo: READY, RESTARTS e se ele recebe tráfego (só imprime quando muda)
-labs/lab-06/watch-pod.sh $POD
-
-# Terminal 2 — eventos do Pod-alvo (probes falhando, restarts)
-kubectl -n ecommerce get events -w --field-selector involvedObject.name=$POD
-
-# Terminal 3 — carga contínua: 10 pedidos/s por 30 min (com retry do cliente usando a MESMA Idempotency-Key)
-scripts/k6.sh create-orders.js RATE=10 DURATION=30m
+kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS=40
+kubectl -n ecommerce rollout status deploy/orders-api
 ```
 
-O terminal 4 é onde você provoca as falhas. Antes de **cada** parte, marque o início da janela para contar as
-respostas da BFF só daquele trecho:
+> **Por que `kubectl set env` e não `scripts/fault.sh orders cpu-work`?** A API admin altera somente os Pods **que já existem**. Os Pods criados pelo HPA nasceriam com o valor padrão (`0`) e não consumiriam CPU — o experimento se "auto-corrigiria". Com a variável no template do Deployment, **toda nova réplica herda** o comportamento, como aconteceria com um custo real de código.
+
+Dispare a carga (Job k6 no nó de observabilidade, isolado dos nós `apps`):
 
 ```bash
-export T0=$(date -u +%FT%TZ)
-# ... falha ...
-labs/lab-06/count-responses.sh "$T0"
+scripts/k6.sh stress-orders.js RATE=60 DURATION=6m
 ```
+
+O script faz rampa de 1 min até 60 req/s, platô de 6 min e descida de 30 s. Erros são esperados sob estresse e não abortam o teste.
+
+Em paralelo (terminal 3, se possível):
+
+```bash
+kubectl -n ecommerce get hpa orders-api -w
+```
+
+O que acompanhar em cada fase do teste:
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Custo de CPU ativado | `set env ORDERS_CPU_WORK_MS=40` | rollout da Orders; novas réplicas herdam a variável | `kubectl -n ecommerce rollout status deploy/orders-api` |
+| Rampa de carga (1 min) | `scripts/k6.sh stress-orders.js RATE=60 DURATION=6m` | utilização do HPA sobe muito acima de 60% | `kubectl -n ecommerce get hpa orders-api -w` (`TARGETS`) |
+| HPA escala | — (automático) | `REPLICAS` sobe em degraus até `maxReplicas: 12` | eventos `SuccessfulRescale` (seção 7.1) |
+| Falta capacidade nos nós | — | réplicas novas `Pending` com `Insufficient cpu` | `get pods --field-selector=status.phase=Pending` (seção 7.2) |
+| CA adiciona nó | — | `TriggeredScaleUp`; nó `apps` novo `NotReady` → `Ready` em ≈2–4 min | `kubectl get nodes -l workload=apps -w` (seção 7.3) |
+| Pods agendados | — | os Pending passam a `Running` no nó novo | painel `labs/lab-06/watch.sh` |
+| Fim da carga | k6 termina (≈7,5 min) | após 120 s o HPA reduz até 2; depois o CA remove o nó extra | seção 7.5 |
 
 ## 6. Falha provocada
 
-Execute as partes **na ordem** (A1 → A2 → B → C → D), no terminal 4.
+Uma demanda de CPU maior do que a capacidade de **Pods** e, em seguida, maior do que a capacidade de **nós**:
 
-### Parte A1 — readiness falha, liveness OK
-
-```bash
-export T0=$(date -u +%FT%TZ)
-scripts/fault.sh orders not-ready $POD
-```
-
-Observe os terminais 1 e 2 por **2 minutos**. Depois:
-
-```bash
-labs/lab-06/count-responses.sh "$T0"
-scripts/fault.sh orders ready $POD     # desfaz; observe o terminal 1 por mais 10 s
-```
-
-### Parte A2 — processo travado
-
-Agora mire a réplica que **está atendendo** (a outra). Na A1 o cliente HTTP da BFF moveu suas conexões
-keep-alive para ela, então travá-la mostra o impacto real em quem chama:
-
-```bash
-export POD=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep -v "$POD")
-# reinicie os terminais 1 e 2 com o novo $POD
-
-export T0=$(date -u +%FT%TZ)
-scripts/fault.sh orders freeze 90 $POD
-```
-
-Observe por **~90 s** (até o Pod voltar a `READY=true`). Depois: `labs/lab-06/count-responses.sh "$T0"`.
-
-### Parte B — rollout sob carga (graceful shutdown)
-
-```bash
-export T0=$(date -u +%FT%TZ)
-OLD=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api -o jsonpath='{.items[0].metadata.name}')
-kubectl -n ecommerce logs -f $OLD | grep --line-buffered SIGTERM &     # o log do Pod que vai encerrar
-kubectl -n ecommerce rollout restart deploy/orders-api
-kubectl -n ecommerce rollout status deploy/orders-api
-sleep 15; kill %1
-labs/lab-06/count-responses.sh "$T0"
-```
-
-### Parte C — deploy quebrado (startup)
-
-Uma configuração errada: a Orders aponta para uma tabela que não existe (e que o Pod Identity dela não pode ler).
-
-```bash
-export T0=$(date -u +%FT%TZ)
-kubectl -n ecommerce set env deploy/orders-api ORDERS_TABLE_NAME=tabela-que-nao-existe
-sleep 20
-NEW=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api
-kubectl -n ecommerce exec $NEW -- python -c "
-import urllib.request as u
-for p in ('startup', 'live', 'ready'):
-    try: r = u.urlopen('http://127.0.0.1:8080/health/' + p); print(p, r.status, r.read().decode()[:200])
-    except Exception as e: print(p, e.code, e.read().decode()[:250])"
-```
-
-Espere **~2 min** e confira de novo:
-
-```bash
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api
-kubectl -n ecommerce get events --field-selector involvedObject.name=$NEW | grep -E 'Unhealthy|Killing'
-kubectl -n ecommerce rollout status deploy/orders-api --timeout=10s      # trava: o rollout não avança
-labs/lab-06/count-responses.sh "$T0"
-```
-
-### Parte D — dependência fora do ar (anti-cascata)
-
-```bash
-export T0=$(date -u +%FT%TZ)
-scripts/fault.sh inventory http-503
-sleep 45
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api
-scripts/fault.sh orders cb
-labs/lab-06/count-responses.sh "$T0"
-scripts/fault.sh all reset
-```
-
-### Parte E — topology spread (falha de nó)
-
-Mantenha o k6 rodando (terminal 3). No terminal 1, troque o painel por um que mostra **onde** cada réplica está:
-
-```bash
-# Terminal 1
-kubectl -n ecommerce get pods -w -o 'custom-columns=POD:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName'
-```
-
-Escolha como **nó A** um nó `apps` **sem** a Inventory (réplica única: drená-la derrubaria a dependência — veja o
-challenge 4):
-
-```bash
-INV_NODE=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api -o jsonpath='{.items[0].spec.nodeName}')
-export NODE_A=$(kubectl get nodes -l workload=apps -o name | sed 's#node/##' | grep -v "$INV_NODE" | head -1)
-export NODE_B=$(kubectl get nodes -l workload=apps -o name | sed 's#node/##' | grep -v "$NODE_A" | head -1)
-echo "A=$NODE_A  B=$NODE_B"
-```
-
-**E1 — distribuição inicial.** Cada API com 2 réplicas tem **uma em cada nó**:
-
-```bash
-kubectl -n ecommerce get pods -l 'app.kubernetes.io/name in (bff-api,orders-api)' -o wide --sort-by=.spec.nodeName
-```
-
-**E2 — a regra é rígida.** Primeiro desligue o **Cluster Autoscaler (CA)**: o componente que adiciona nós ao node
-group `apps` (2 a 5 nós) quando há Pods `Pending` por falta de espaço, e remove nós ociosos. Ligado, ele veria a
-réplica pendente deste passo e criaria um 3º nó em 2–4 min — um nó com 0 réplicas, onde ela cabe sem violar o
-`maxSkew` — e o bloqueio que você quer observar sumiria. "Desligar" é escalar o Deployment dele para 0:
-
-```bash
-kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=0
-kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler   # READY 0/0 = desligado
-```
-
-Agora ocupe a CPU livre **só do nó A** e peça 4 réplicas da Orders:
-
-```bash
-python3 labs/lab-03/fill-capacity.py --node $NODE_A --slack 100
-kubectl -n ecommerce patch hpa orders-api -p '{"spec":{"minReplicas":4}}'
-sleep 40
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api -o wide
-P=$(kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api --field-selector=status.phase=Pending -o name | head -1)
-kubectl -n ecommerce describe $P | sed -n '/Events/,$p'
-kubectl describe node $NODE_B | grep -A6 'Allocated resources'     # o nó B tem CPU livre
-```
-
-Libere o nó A e veja a réplica pendente subir **nele**:
-
-```bash
-kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast
-sleep 20; kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api -o wide
-kubectl -n ecommerce patch hpa orders-api -p '{"spec":{"minReplicas":2}}'      # volta a 2 (aguarde ~1 min)
-```
-
-**E3 — drain de um nó e o que acontece depois.**
-
-```bash
-export T0=$(date -u +%FT%TZ)
-kubectl drain $NODE_A --ignore-daemonsets --delete-emptydir-data
-sleep 30
-kubectl -n ecommerce get pods -o wide --sort-by=.spec.nodeName
-labs/lab-06/count-responses.sh "$T0"
-
-kubectl uncordon $NODE_A
-sleep 60
-kubectl -n ecommerce get pods -o wide --sort-by=.spec.nodeName           # ainda tudo no nó B?
-
-export T0=$(date -u +%FT%TZ)
-kubectl -n ecommerce rollout restart deploy/orders-api deploy/bff-api
-kubectl -n ecommerce rollout status deploy/orders-api && kubectl -n ecommerce rollout status deploy/bff-api
-kubectl -n ecommerce get pods -o wide --sort-by=.spec.nodeName
-labs/lab-06/count-responses.sh "$T0"
-
-# Religue o Cluster Autoscaler (desligado na E2). READY 1/1 = ligado.
-kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=1
-kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler
-```
+- Cada `POST /orders` gasta ~40 ms de CPU (`Validate Order`).
+- Um processo Python (1 worker uvicorn, GIL) usa no máximo ~1 core ⇒ ~**25 req/s por réplica**, no limite do `limits.cpu: 1000m`.
+- 60 req/s × 40 ms = **2,4 cores** de demanda. Para manter 150m por Pod (60% de 250m), o HPA calcula ≈ 2400 / 150 = **16 réplicas** ⇒ limitado a `maxReplicas: 12`.
+- 12 × 250m = **3 vCPU** de requests só para a Orders API. Somando BFF (2×200m), Inventory (100m), CoreDNS, Metrics Server e DaemonSets, os 2 nós m6i.large (~3,8 vCPU alocáveis) **não comportam** ⇒ Pods `Pending`.
 
 ## 7. Observações
 
-Valores medidos no cluster `rw-0001` (10 pedidos/s) durante a validação deste lab. Os seus tempos podem variar
-alguns segundos: o kubelet roda cada probe no próprio relógio, sem sincronia com o seu comando.
+### 7.1 HPA (Pod Autoscaling)
 
-### A1 — `not-ready`
+```bash
+kubectl -n ecommerce describe hpa orders-api | sed -n '/Metrics:/,$p'
+```
 
-| Quando (após o comando) | Terminal 1 | Terminal 2 |
+- A utilização sobe muito acima de 60% (centenas de %), porque é calculada sobre `requests` (250m), não sobre `limits`.
+- `desiredReplicas` salta em degraus (+100% ou +4 Pods a cada 15 s) até 12.
+- Eventos `SuccessfulRescale` com `New size: N; reason: cpu resource utilization (percentage of request) above target`.
+
+Como o HPA decide (a cada ciclo de avaliação):
+
+```mermaid
+flowchart LR
+    A["uso de CPU por Pod (Metrics Server)"] --> B["utilização = uso ÷ requests.cpu (250m)"]
+    B --> C{"média > 60%?"}
+    C -- sim --> D["desired = ceil(atual × utilização ÷ 60%)"]
+    D --> E["scaleUp: máx(+100%, +4 Pods) a cada 15 s, sem estabilização"]
+    E --> F["limitado a maxReplicas: 12"]
+    C -- não --> G["scaleDown: aguarda 120 s, então −50% a cada 30 s"]
+    G --> H["limitado a minReplicas: 2"]
+```
+
+### 7.2 Pods Pending e FailedScheduling
+
+```bash
+kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api --field-selector=status.phase=Pending
+kubectl get events -A --field-selector reason=FailedScheduling \
+  -o custom-columns=TIME:.lastTimestamp,POD:.involvedObject.name,MSG:.message | tail
+```
+
+Mensagem típica: `0/3 nodes are available: 1 node(s) had untolerated taint {workload: observability}, 2 Insufficient cpu.` — o nó de observabilidade está protegido por taint; os nós `apps` estão cheios **de requests**, não necessariamente de uso.
+
+### 7.3 Cluster Autoscaler (Node Autoscaling)
+
+```bash
+kubectl -n kube-system logs -l app.kubernetes.io/name=aws-cluster-autoscaler -f --tail=50 \
+  | grep -E "Pod .* is unschedulable|Final scale-up plan|Scale-up|scale-up|ScaleUp|Removing|unneeded"
+kubectl get events -A --field-selector reason=TriggeredScaleUp
+kubectl get nodes -l workload=apps -w
+```
+
+- `Final scale-up plan: [{eks-apps-… 2->3 (max: 5)}]` e evento `TriggeredScaleUp` no Pod Pending.
+- O nó novo aparece `NotReady` e depois `Ready` em **≈2–4 min** (EC2 boot + join + CNI). Durante esse tempo os Pods continuam Pending — **é a janela em que a capacidade não existe**.
+- Em seguida, os Pods Pending são agendados no nó novo.
+
+```mermaid
+flowchart LR
+    P["Pod orders-api Pending (Insufficient cpu)"] --> CA["Cluster Autoscaler simula: o Pod cabe num nó apps novo?"]
+    CA -- "sim, e node group < maxSize 5" --> UP["TriggeredScaleUp: desired 2 → 3"]
+    UP --> EC2["EC2 boot + join + CNI (≈2–4 min)"]
+    EC2 --> R["nó Ready"]
+    R --> S["Scheduler agenda os Pods Pending"]
+    CA -- "não (maxSize atingido)" --> W["Pods seguem Pending: max node group size reached"]
+```
+
+> As APIs têm `topologySpreadConstraints` (`maxSkew: 1` por nó, `DoNotSchedule`): o scheduler mantém as réplicas da
+> Orders equilibradas entre os nós `apps`. Uma réplica pode ficar `Pending` mesmo com CPU livre em outro nó, se ir
+> para lá deixasse a diferença maior que 1. O CA trata isso como qualquer Pod Pending: o nó novo (0 réplicas) a recebe.
+
+### 7.4 HyperDX / ClickHouse
+
+No HyperDX (source `Metrics`), crie gráficos com:
+
+| O que observar | Métrica | Filtro / agrupamento |
 |---|---|---|
-| ~10 s | `READY=false  RESTARTS=0  recebe-tráfego=não` | `Readiness probe failed: HTTP probe failed with statuscode: 503` |
-| 2 min depois | **igual**: continua fora, `RESTARTS=0` | nenhum `Killing` |
-| ~5 s após `ready` | `READY=true  recebe-tráfego=true` | — |
+| CPU por Pod | `k8s.pod.cpu.usage` (kubeletstats) | `ResourceAttributes.k8s.deployment.name:"orders-api"`, group by `k8s.pod.name` |
+| Utilização vs requests | `k8s.pod.cpu_request_utilization` | idem |
+| Pods Pending | `k8s.pod.phase` (k8s_cluster; `1` = Pending) | `ResourceAttributes.k8s.namespace.name:"ecommerce"` |
+| Réplicas | `k8s.deployment.desired` × `k8s.deployment.available` | `k8s.deployment.name = orders-api` |
+| Throttling (cgroup v2, emitido pela própria API) | `container.cpu.throttled_time` (s, cumulativo) | `ServiceName:"orders-api"` |
+| Latência | `http.server.request.duration` (p95/p99) | `http.route = /orders`, `http.request.method = POST` |
 
-Respostas da BFF na janela: **815 × `201`, 0 erros** — a outra réplica atendeu tudo.
+Ou via ClickHouse (o mesmo dado usado pelo HyperDX):
 
-### A2 — `freeze 90`
+```bash
+source scripts/lib/common.sh; source scripts/lib/cluster-helpers.sh
 
-| Quando (após o comando) | Terminal 1 | Terminal 2 |
-|---|---|---|
-| ~8 s | — | `Liveness probe failed: ... context deadline exceeded (Client.Timeout exceeded while awaiting headers)` (timeout, **não** 503) |
-| ~14 s | `READY=false  recebe-tráfego=não` | `Readiness probe failed: ... context deadline exceeded` |
-| ~36 s | — | `Killing: Container app failed liveness probe, will be restarted` |
-| ~66 s | `RESTARTS=1` | `Started` (30 s depois do `Killing`, veja a seção 8) |
-| ~73 s | `READY=true  recebe-tráfego=true` | — |
+# Pods Pending por minuto (k8s.pod.phase = 1)
+clickhouse_query "SELECT toStartOfMinute(TimeUnix) m, uniqExact(ResourceAttributes['k8s.pod.name']) pending
+FROM otel_metrics_gauge WHERE MetricName='k8s.pod.phase' AND Value=1
+  AND ResourceAttributes['k8s.namespace.name']='ecommerce' AND TimeUnix > now() - INTERVAL 30 MINUTE
+GROUP BY m ORDER BY m"
 
-O restart acontece **antes** dos 90 s do `freeze` acabarem: foi a liveness que destravou a réplica.
+# Réplicas desejadas x disponíveis
+clickhouse_query "SELECT toStartOfMinute(TimeUnix) m, MetricName, max(Value)
+FROM otel_metrics_gauge WHERE MetricName IN ('k8s.deployment.desired','k8s.deployment.available')
+  AND ResourceAttributes['k8s.deployment.name']='orders-api' AND TimeUnix > now() - INTERVAL 30 MINUTE
+GROUP BY m, MetricName ORDER BY m, MetricName"
 
-Respostas da BFF na janela: **1160 × `201`, 6 × `504`, 2 × `409`** (de 1168).
-- `504 UPSTREAM_TIMEOUT`: pedidos que já estavam na réplica quando ela travou esperaram os 3 s de timeout da BFF.
-  Pararam quando o Pod saiu do EndpointSlice.
-- `409 ORDER_IN_PROGRESS`: o k6 repetiu esses pedidos com a **mesma** `Idempotency-Key`, mas o lease ainda estava
-  com a réplica travada. A repetição seguinte (depois do lease) foi confirmada.
-- Se você congelar a réplica para a qual a BFF **não** tem conexões abertas (a da A1), os erros podem ser **zero**:
-  o impacto depende de quantas conexões keep-alive apontavam para ela.
+# CPU média por Pod da Orders API (cores)
+clickhouse_query "SELECT toStartOfMinute(TimeUnix) m, round(avg(Value),3) cores, uniqExact(ResourceAttributes['k8s.pod.name']) pods
+FROM otel_metrics_gauge WHERE MetricName='k8s.pod.cpu.usage'
+  AND ResourceAttributes['k8s.deployment.name']='orders-api' AND TimeUnix > now() - INTERVAL 30 MINUTE
+GROUP BY m ORDER BY m"
 
-### B — rollout
+# Throttling acumulado por Pod (segundos)
+clickhouse_query "SELECT ResourceAttributes['k8s.pod.name'] pod, round(max(Value) - min(Value),2) throttled_s
+FROM otel_metrics_sum WHERE MetricName='container.cpu.throttled_time' AND ServiceName='orders-api'
+  AND TimeUnix > now() - INTERVAL 30 MINUTE GROUP BY pod ORDER BY throttled_s DESC"
+```
 
-- Log do Pod antigo: `SIGTERM recebido: readiness=false, aguardando 5.0s antes de encerrar`.
-- `maxSurge: 1, maxUnavailable: 0`: o Pod novo fica `1/1` **antes** de um antigo ser encerrado.
-- Respostas da BFF: **0 erros** (2 rodadas: 288 e 277 × `201`).
+### 7.5 Fim da carga e recuperação
 
-### C — deploy quebrado
+Após o k6 terminar (≈7,5 min), mantenha o painel aberto:
 
-- Pod novo `0/1`; os 2 antigos continuam `1/1`.
-- `/health/startup` → `503` com
-  `"last_error": "DynamoUnavailable: AccessDeniedException: ... is not authorized to perform: dynamodb:GetItem ..."`.
-- `/health/live` → `200` (o processo está vivo; reiniciar não conserta configuração errada).
-- `/health/ready` → `503`.
-- ~2 min depois: `Killing: Container app failed startup probe, will be restarted` e `RESTARTS 1`. A cada ciclo de
-  120 s ele reinicia de novo, com back-off crescente entre as tentativas (`CrashLoopBackOff` aparece entre elas).
-- `rollout status` → `timed out waiting for the condition`: o rollout não avança.
-- Respostas da BFF: **2121 × `201`, 0 erros** — o Pod quebrado nunca recebeu tráfego.
+1. A CPU cai imediatamente, mas o HPA **espera 120 s** (`scaleDown.stabilizationWindowSeconds`) antes de reduzir, e então remove no máximo 50% das réplicas a cada 30 s até `minReplicas: 2`.
+2. Com Pods removidos, o nó extra fica subutilizado (< 50% de requests). Após `scale-down-unneeded-time=2m` (e `scale-down-delay-after-add=2m` desde o scale-up), o CA drena e remove o nó: logs `Scale-down: removing empty node` / `node … is unneeded`.
+3. O node group volta a 2 nós (`minSize: 2`).
 
-### D — Inventory em 503
+```mermaid
+flowchart LR
+    A["k6 termina"] --> B["CPU cai na hora"]
+    B --> C["HPA: stabilization 120 s"]
+    C --> D["−50% a cada 30 s (12 → 6 → 3 → 2)"]
+    D --> E["nó extra com < 50% de requests"]
+    E --> F["CA: unneeded por 2 min (e ≥ 2 min desde o scale-up)"]
+    F --> G["drena e remove o nó → 2 nós (minSize)"]
+```
 
-- Orders: 2 réplicas `1/1`, `RESTARTS 0`, **nenhum** evento de probe.
-- Circuit Breaker: `OPEN` / `HALF_OPEN` nas réplicas (`consecutive_failures: 5`).
-- Respostas da BFF em 45 s: **919 × `503`, 37 × `201`** — `503 DEPENDENCY_UNAVAILABLE` com `Retry-After`, um erro
-  de **negócio** que o cliente sabe tratar.
+### Achado da validação real: preemption durante o scale-out
 
-### E — topology spread
+Na primeira execução real deste lab (EKS 1.36, 2026-10-14) a Inventory API ainda **não** tinha
+PriorityClass (prioridade 0). Quando o HPA levou a Orders (prioridade 1000) a 12 réplicas, o scheduler
+**preemptou a Inventory** para abrir espaço — e todos os pedidos falharam até ela voltar:
 
-| Passo | O que aparece |
-|---|---|
-| E1 | BFF e Orders: **1 réplica em cada nó `apps`** |
-| E2, 40 s depois | 3ª réplica no nó B; 4ª **`Pending`** com *"0/3 nodes are available: 1 Insufficient cpu, 1 node(s) didn't match pod topology spread constraints, 1 node(s) had untolerated taint(s) … preemption: … Preemption is not helpful for scheduling"* |
-| E2, nó B | `cpu 1190m (61%)` de 1930m: **~740m livres**, e mesmo assim a réplica não foi para lá (ficaria 3 × 1) |
-| E2, sem o ballast | a réplica pendente sobe **no nó A** em segundos → 2 × 2 |
-| E2, `minReplicas: 2` | o ReplicaSet remove réplicas mantendo o equilíbrio → 1 × 1 |
-| E3, drain | `evicting pod ecommerce/bff-api…`, `…orders-api…`; o drain respeita o PDB do CoreDNS (`Cannot evict pod as it would violate the pod's disruption budget`, nova tentativa em 5 s); tudo vai para o nó B |
-| E3, BFF durante o drain | **513 × `201`, 0 erros** (readiness + graceful shutdown da parte B) |
-| E3, 60 s após `uncordon` | **tudo continua no nó B**: o nó A voltou, mas nada se move |
-| E3, `rollout restart` | 1 réplica em cada nó de novo; BFF: **282 × `201`, 0 erros** |
+```text
+2026-10-14T16:10:59Z  inventory-api-ff899c866-8mrnt  Preempted by pod 0e86631a-... on node ip-192-168-87-71.ec2.internal
+```
+
+Por isso o estado base agora define `priorityClassName: critical-services` na Inventory
+(`kubernetes/apps/inventory-api/deployment.yaml`). Lição: **ausência de PriorityClass é uma prioridade (0)** — a
+mais baixa do cluster. Confira com:
+
+```bash
+kubectl get events -A --field-selector reason=Preempted
+kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,PRIO:.spec.priority
+```
 
 ## 8. Explicação técnica
 
-- **Readiness controla tráfego; liveness controla o processo.** Na A1 só a readiness falha: o EndpointSlice marca o
-  Pod como não pronto e kube-proxy/NLB param de enviar requisições, mas o container segue rodando. Na A2 as duas
-  falham — primeiro a réplica é isolada (readiness: 2 × 5 s), depois reiniciada (liveness: 3 × 10 s).
-- **Os 30 s entre `Killing` e `Started` na A2:** o kubelet envia `SIGTERM`, mas o processo está travado e não
-  consegue tratá-lo (o handler roda no próprio event loop). O kubelet espera `terminationGracePeriodSeconds: 30` e
-  então envia `SIGKILL`. Um processo saudável encerraria em ~5 s (parte B).
-- **Graceful shutdown (parte B):** três tempos atuam no encerramento:
-
-  | Tempo | Onde | Papel |
-  |---|---|---|
-  | `SHUTDOWN_DELAY_SECONDS` = 5 s | aplicação (`workshop_common/server.py`) | após o `SIGTERM`, a readiness responde 503 e o processo **espera, ainda atendendo**, até sair dos endpoints |
-  | `timeout_graceful_shutdown` = 20 s | uvicorn | termina as requisições em andamento sem aceitar novas |
-  | `terminationGracePeriodSeconds` = 30 s | Deployment | limite total; depois disso, `SIGKILL` |
-
-  Em produção é comum fazer a espera com um `preStop` hook (`lifecycle.preStop.sleep`), no manifesto, em vez de
-  na aplicação — o efeito é o mesmo.
-- **Startup separa "lento para subir" de "travado".** O warm-up da Orders faz um `GetItem` no DynamoDB (valida Pod
-  Identity, policy e tabela) e repete com backoff. Enquanto ele não passa, a startup responde 503 com `last_error`
-  e as outras probes nem rodam. A liveness responde 200 o tempo todo: sem a startup probe, um warm-up lento seria
-  morto pela liveness antes de terminar.
-- **`maxUnavailable: 0` + readiness = deploy seguro.** O Deployment só encerra um Pod antigo quando um novo fica
-  pronto. Se o novo nunca fica pronto (parte C), o rollout para e o serviço continua no ar.
-- **Readiness não verifica dependências (parte D).** Se verificasse a Inventory, as **duas** réplicas da Orders
-  sairiam do Service ao mesmo tempo, e a BFF passaria a receber erro de conexão (cascata). A falha da dependência
-  é tratada no lugar certo: timeout, retry e Circuit Breaker na chamada (LAB 04).
-- **Nesta implementação, readiness e liveness só divergem em dois casos:** o shutdown (os 5 s do `SIGTERM`) e o
-  `not-ready` do lab. "Ainda não iniciou" já é coberto pela startup probe. Manter as duas rotas separadas custa
-  zero e deixa a readiness pronta para motivos próprios **da réplica** (warm-up, manutenção, saturação local).
-- **Topology spread é uma regra de agendamento.** O scheduler a avalia só quando um Pod é criado:
-  - `maxSkew: 1` + `DoNotSchedule`: um Pod só vai para um nó se, depois disso, a diferença entre o nó com mais e o
-    com menos réplicas for ≤ 1. Por isso a 4ª réplica (E2) esperou o nó A, ignorando a CPU livre do nó B. Com
-    `ScheduleAnyway` seria só uma preferência: ela iria para o B (3 × 1).
-  - `nodeAffinityPolicy` (padrão `Honor`) + o `nodeSelector workload=apps`: o nó `observability` não conta.
-    `nodeTaintsPolicy: Honor`: nós com taint — inclusive o `node.kubernetes.io/unschedulable` do cordon/drain — saem
-    da conta. Sem isso, o nó drenado seria um domínio com 0 réplicas e **todo** Pod novo ficaria `Pending` (E3).
-  - `matchLabelKeys: [pod-template-hash]`: só o ReplicaSet atual conta; num rollout as réplicas antigas não
-    desequilibram a distribuição das novas.
-  - Nada rebalanceia depois (E3): o spread não move Pods que já rodam. Para redistribuir, um `rollout restart` (ou o
-    [descheduler](https://github.com/kubernetes-sigs/descheduler) com `RemovePodsViolatingTopologySpreadConstraint`).
-    Entre o `uncordon` e o restart, perder o nó B derrubaria **todas** as réplicas.
-- **Spread + Cluster Autoscaler:** com o CA ligado, a réplica pendente da E2 faria o CA criar um nó novo (um domínio
-  com 0 réplicas, onde ela cabe). Por isso o CA fica desligado nesse passo.
-- **Spread não protege réplica única.** A Inventory tem 1 réplica (estado em memória, `Recreate`): qualquer drain
-  do nó dela derruba a dependência até o Pod subir em outro nó.
+- **HPA = Pod Autoscaling.** Ajusta `spec.replicas` de um Deployment a partir de métricas (aqui, CPU do Metrics Server). Fórmula: `desired = ceil(current × utilização_atual / utilização_alvo)`, onde utilização = **uso real ÷ `requests.cpu`**. Sem `requests`, o HPA não calcula utilização; com `requests` subdimensionado, ele escala cedo demais; superdimensionado, tarde demais (e desperdiça capacidade).
+- **Cluster Autoscaler = Node Autoscaling.** Não olha CPU nem latência. Ele reage a **Pods Pending por falta de recursos** (com base em `requests`) e simula se um nó do node group comportaria o Pod; também remove nós cujos Pods caberiam em outros. Ele só escala node groups descobertos pelas tags `k8s.io/cluster-autoscaler/enabled` e `k8s.io/cluster-autoscaler/<cluster>` e respeita `minSize`/`maxSize`.
+- **Tempos diferentes:** HPA reage em segundos; um nó novo leva minutos. Entre os dois, há **capacidade insuficiente** — a latência e os erros (veja `http.server.request.duration` e o k6) aparecem justamente nessa janela.
+- **Limits e throttling:** com `limits.cpu: 1000m`, o CFS limita o container a 1 core por período de 100 ms; o excesso vira `nr_throttled`/`throttled_usec` (`container.cpu.throttled_time`). Throttling **aumenta latência sem gerar erro** — não aparece como "falha", só como lentidão.
+- **Isolamento do plano de controle do experimento:** o k6 e o Cluster Autoscaler rodam no nó `observability` (taint `workload=observability:NoSchedule`), então a pressão nos nós `apps` não derruba o gerador de carga nem a observabilidade.
 
 ## 9. Correção
 
-Não há bug a corrigir: as falhas foram provocadas. A "correção" de cada parte é desfazer a causa:
+O comportamento observado é o desenhado; a correção é **dimensionar coerentemente as três camadas**:
+
+1. **Requests realistas:** medir o uso de CPU por réplica sob carga nominal (seção 7.4) e ajustar `requests.cpu` para refleti-lo; o HPA passa a refletir saturação real.
+2. **`maxReplicas` coerente com `maxSize` do node group:** `maxReplicas × requests` (mais BFF, Inventory e DaemonSets) deve caber em `maxSize × alocável`. Hoje: 12 × 250m = 3 vCPU para a Orders cabem em 5 nós, mas não em 2.
+3. **Absorver o tempo de provisionamento:** `minReplicas` maior em eventos previstos, ou capacidade ociosa (overprovisioning com Pods de baixa prioridade — tema do LAB 05).
+4. **Remover o custo artificial de CPU:**
 
 ```bash
-scripts/fault.sh orders ready            # A1 (todas as réplicas)
-# A2: nada — a liveness já reiniciou a réplica
-kubectl -n ecommerce rollout undo deploy/orders-api    # C: volta para a revisão anterior (sem ORDERS_TABLE_NAME)
-scripts/fault.sh all reset               # D: remove a falha da Inventory e reseta os Circuit Breakers
-kubectl uncordon $NODE_A                 # E: nó de volta ao agendamento
-kubectl -n ecommerce rollout restart deploy/orders-api deploy/bff-api   # E: redistribui as réplicas
-kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=1   # E: CA ligado
+kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS-
+kubectl -n ecommerce rollout status deploy/orders-api
 ```
 
 ## 10. Validação
 
 ```bash
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api        # 2 réplicas 1/1
-kubectl -n ecommerce get deploy orders-api -o jsonpath='{.spec.template.spec.containers[0].env[*].name}'; echo
-# não deve conter ORDERS_TABLE_NAME
-scripts/fault.sh orders health           # forced_not_ready=false em todos os Pods
-scripts/fault.sh orders cb               # CLOSED (após ~15 s sem falhas)
-kubectl get nodes -l workload=apps       # nenhum SchedulingDisabled
-kubectl -n ecommerce get pods -l 'app.kubernetes.io/name in (bff-api,orders-api)' -o wide   # 1 réplica por nó
+labs/lab-06/verify.sh
 ```
+
+O script grava `.workshop/lab-06-evidence.txt` com eventos do HPA, `FailedScheduling`, `TriggeredScaleUp`, logs de scale-up do Cluster Autoscaler e horários de criação dos nós, e indica:
+
+- `✔ HPA escalou (SuccessfulRescale)`
+- `✔ Cluster Autoscaler disparou scale-up`
+
+Após ~5–8 min sem carga:
+
+```bash
+kubectl -n ecommerce get hpa orders-api       # REPLICAS volta a 2
+kubectl get nodes -l workload=apps            # volta a 2 nós
+```
+
+| Cenário | Comportamento esperado | Como verificar |
+|---|---|---|
+| HPA reagiu à CPU | evento `SuccessfulRescale`, réplicas acima de 2 (até 12) | `verify.sh`: `✔ HPA escalou (SuccessfulRescale)` |
+| Falta de capacidade | Pods `Pending` com `FailedScheduling: … Insufficient cpu` | `.workshop/lab-06-evidence.txt`, seção "Eventos FailedScheduling / TriggeredScaleUp" |
+| CA adicionou nó | `TriggeredScaleUp` / `Final scale-up plan`; nó `apps` novo com `CREATED` durante o teste | `verify.sh`: `✔ Cluster Autoscaler disparou scale-up`; seção "Nós" do arquivo |
+| Inventory não foi preemptada | nenhum evento `Preempted` para `inventory-api` | `kubectl get events -A --field-selector reason=Preempted` |
+| Recuperação | réplicas voltam a 2 e o node group a 2 nós, ~5–8 min após a carga | `kubectl -n ecommerce get hpa orders-api`; `kubectl get nodes -l workload=apps` |
 
 ## 11. Challenge
 
-1. Rode `scripts/fault.sh orders not-ready` em **todas** as réplicas (um Pod por vez). O que a BFF responde? Por
-   que isso é exatamente o que a decisão "readiness não verifica dependências" evita?
-2. Na parte C, quanto tempo um deploy quebrado leva para ser detectado? Que parâmetro da startup probe você
-   mudaria para detectar mais cedo, e qual o risco de um warm-up legítimo (ex.: DynamoDB lento) ser cortado?
-3. Troque o `SHUTDOWN_DELAY_SECONDS` da aplicação por um `preStop` hook no Deployment da Orders
-   (`lifecycle.preStop.sleep.seconds: 5`) e repita a parte B. O resultado muda? Onde a configuração fica mais
-   visível para quem opera o cluster? (Ao terminar: `kubectl -n ecommerce rollout undo deploy/orders-api`.)
-4. Repita a E3 drenando o nó **da Inventory**. Quantos `503` a BFF devolve e por quanto tempo? O que mudaria com 2
-   réplicas da Inventory — e por que hoje ela não pode ter 2 (estoque em memória)?
-5. Repita a E2 com o Cluster Autoscaler **ligado**. Quanto tempo até a réplica pendente rodar, e em qual nó?
+1. Rode novamente com `RATE=30`. O CA é acionado? Calcule antes (réplicas desejadas × 250m) e confirme.
+2. Altere temporariamente o HPA para `averageUtilization: 80` (`kubectl -n ecommerce edit hpa orders-api`). O que muda no número de réplicas e na latência p99?
+3. Remova o `limits.cpu` da Orders API (QoS continua Burstable). O throttling some? Qual o risco para os vizinhos no nó?
+4. Por que o HPA não escala o nó e o CA não escala Pods? Desenhe a cadeia causal de "60 req/s" até "nó novo Ready" com os tempos medidos.
+5. Com `maxSize: 5`, qual a taxa máxima sustentável antes de Pods ficarem Pending indefinidamente? O que o CA registra nesse caso (`max node group size reached`)?
 
 ## 12. Critérios de sucesso
 
-- [ ] A1: o Pod ficou fora do tráfego por 2 min com `RESTARTS=0` e 0 erros na BFF.
-- [ ] A2: o Pod saiu do tráfego **antes** de ser reiniciado, e o restart veio antes do fim do `freeze`.
-- [ ] B: rollout com 0 erros e o log `SIGTERM recebido` no Pod antigo.
-- [ ] C: o Pod novo nunca ficou pronto, o `last_error` explicou a causa e a BFF teve 0 erros.
-- [ ] D: a Orders continuou `1/1` com a Inventory fora, e o erro chegou como `503 DEPENDENCY_UNAVAILABLE`.
-- [ ] E: a 4ª réplica ficou `Pending` com CPU livre no outro nó, e após o `uncordon` nada se moveu até o restart.
-- [ ] Você sabe explicar por que a liveness **não** deve verificar o DynamoDB nem a Inventory.
+- [ ] HPA aumentou as réplicas da Orders API (evento `SuccessfulRescale`), chegando a `maxReplicas` ou próximo.
+- [ ] Pods `Pending` com `FailedScheduling: Insufficient cpu` observados.
+- [ ] Cluster Autoscaler registrou scale-up e um nó `apps` novo ficou `Ready`.
+- [ ] Os Pods Pending foram agendados no nó novo.
+- [ ] Após a carga, réplicas voltaram a 2 e o nó extra foi removido.
+- [ ] Você explica a diferença entre Pod Autoscaling e Node Autoscaling e o papel de `requests.cpu`.
 
 ## 13. Reset
 
 ```bash
-kubectl -n loadtest delete jobs -l app.kubernetes.io/name=k6     # se o k6 ainda estiver rodando
-scripts/reset.sh       # remove overrides (ORDERS_TABLE_NAME etc.), falhas e ballasts; uncordon dos nós apps; CA ligado
+kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS-   # se ainda não removido
+kubectl -n loadtest delete jobs -l app.kubernetes.io/name=k6 --ignore-not-found
+scripts/reset.sh
 ```
+
+Se o nó extra ainda existir, aguarde o scale-down do Cluster Autoscaler (~2–4 min) antes do LAB 05 — o LAB 05 calcula a capacidade livre de cada nó.

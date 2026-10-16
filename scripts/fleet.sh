@@ -11,23 +11,23 @@
 #   access   (re)cria a role de cada aluno + access entry (após infrastructure/identity-center.sh)
 #   status   estado do cluster e da última validação de cada aluno
 #   down     teardown de todos os ambientes da turma (DELETE_IMAGES=true remove também as imagens)
-#   up-one   um aluno só (refazer/recuperar): scripts/fleet.sh up-one <roster.csv> <student_id>  (make student-up)
-#   down-one remove o ambiente de um aluno: scripts/fleet.sh down-one <roster.csv> <student_id>  (make student-down)
-#   profile  imprime o ~/.aws/config de um aluno: scripts/fleet.sh profile <roster.csv> <student_id>
+#   up-one   um aluno só (refazer/recuperar): scripts/fleet.sh up-one <roster.csv> <cluster_id>  (make student-up)
+#   down-one remove o ambiente de um aluno: scripts/fleet.sh down-one <roster.csv> <cluster_id>  (make student-down)
+#   profile  imprime o ~/.aws/config de um aluno: scripts/fleet.sh profile <roster.csv> <cluster_id>
 # Estado/logs por aluno: .workshop/fleet/rw-<id>/ (kubeconfig, overlay, credenciais HyperDX, up.log, down.log)
 export WORKSHOP_NO_CLUSTER=true   # cada aluno define o próprio CLUSTER_NAME (student_env)
 source "$(dirname "$0")/lib/common.sh"
 require aws python3
 
 cmd="${1:-}"; roster="${2:-}"
-[[ -n "$cmd" && -f "$roster" ]] || fail "Uso: $0 quotas|up|access|status|down|up-one|down-one|profile <roster.csv> [student_id]"
+[[ -n "$cmd" && -f "$roster" ]] || fail "Uso: $0 quotas|up|access|status|down|up-one|down-one|profile <roster.csv> [cluster_id]"
 PARALLEL="${PARALLEL:-8}"
 FLEET_DIR="$REPO_ROOT/.workshop/fleet"
 account_id >/dev/null
 
-students() {   # imprime "student_id username" por linha
+students() {   # imprime "cluster_id username" por linha
   while IFS=, read -r sid username _; do
-    [[ "$sid" == student_id || -z "$sid" || "$sid" == \#* ]] && continue
+    [[ "$sid" == cluster_id || "$sid" == student_id || -z "$sid" || "$sid" == \#* ]] && continue
     echo "$sid $username"
   done < "$roster"
 }
@@ -36,9 +36,9 @@ while IFS= read -r line; do ROWS+=("$line"); done < <(students)
 [[ ${#ROWS[@]} -gt 0 ]] || fail "Roster vazio: $roster"
 
 # Ambiente isolado de um aluno: estado, overlay, kubeconfig e portas locais do HyperDX próprios.
-student_env() {   # $1 = student_id, $2 = índice
+student_env() {   # $1 = cluster_id, $2 = índice
   local cluster="rw-$1"
-  export STUDENT_ID="$1" CLUSTER_NAME="$cluster" ASSUME_YES=true
+  export CLUSTER_ID="$1" CLUSTER_NAME="$cluster" ASSUME_YES=true
   export STATE_DIR="$FLEET_DIR/$cluster"
   export OVERLAY_DIR="$STATE_DIR/overlay" KUBECONFIG="$STATE_DIR/kubeconfig"
   export HDX_APP_PORT=$((13000 + $2)) HDX_API_PORT=$((18000 + $2))
@@ -62,7 +62,7 @@ run_all() {   # $1 = função, $2 = nome do log
   [[ $failed -eq 0 ]] || fail "$failed de ${#ROWS[@]} alunos com falha"
 }
 
-student_up() {   # $1 = student_id, $2 = username
+student_up() {   # $1 = cluster_id, $2 = username
   "$REPO_ROOT/scripts/setup.sh"
   "$REPO_ROOT/scripts/hyperdx-credentials.sh" push
   "$REPO_ROOT/scripts/deploy.sh" --skip-build
@@ -81,7 +81,7 @@ case "$cmd" in
     used_vpc="$(aws ec2 describe-vpcs --region "$AWS_REGION" --query 'length(Vpcs)')"
     used_eip="$(aws ec2 describe-addresses --region "$AWS_REGION" --query 'length(Addresses)')"
     used_igw="$(aws ec2 describe-internet-gateways --region "$AWS_REGION" --query 'length(InternetGateways)')"
-    # Por aluno: 1 VPC, 1 IGW, 1 NAT (1 EIP); 2x m6i.large + 1x m6i.xlarge = 8 vCPU (até 14 com o CA no LAB 02).
+    # Por aluno: 1 VPC, 1 IGW, 1 NAT (1 EIP); 2x m6i.large + 1x m6i.xlarge = 8 vCPU (até 14 com o CA no LAB 06).
     printf '%-34s %8s %8s %10s\n' "Quota (${AWS_REGION})" "Atual" "Em uso" "Necessário"
     printf '%-34s %8s %8s %10s\n' "VPCs por região (L-F678F1CE)" "$(q vpc L-F678F1CE)" "$used_vpc" "$((used_vpc + n))"
     printf '%-34s %8s %8s %10s\n' "Internet gateways (L-A4707A72)" "$(q vpc L-A4707A72)" "$used_igw" "$((used_igw + n))"
@@ -102,7 +102,7 @@ case "$cmd" in
     ;;
   up-one|down-one)
     # Mesmo fluxo de um aluno do "up"/"down", em primeiro plano (saída no terminal e no log do aluno).
-    sid="${3:?student_id (ex.: aluno07)}"; row="$(printf '%s\n' "${ROWS[@]}" | awk -v s="$sid" '$1 == s')"
+    sid="${3:?cluster_id (ex.: aluno07)}"; row="$(printf '%s\n' "${ROWS[@]}" | awk -v s="$sid" '$1 == s')"
     [[ -n "$row" ]] || fail "Aluno '$sid' não está no roster $roster"
     read -r sid username <<<"$row"
     if [[ "$cmd" == up-one ]]; then
@@ -156,7 +156,7 @@ source_profile = workshop-sso
 role_arn = arn:aws:iam::${AWS_ACCOUNT_ID}:role/rw-${sid}-student
 region = ${AWS_REGION}
 
-# Depois:  export AWS_PROFILE=workshop STUDENT_ID=${sid}
+# Depois:  export AWS_PROFILE=workshop CLUSTER_ID=${sid}
 #          aws eks update-kubeconfig --name rw-${sid} && make hyperdx-credentials-pull
 CFG
     ;;

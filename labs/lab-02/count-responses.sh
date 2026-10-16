@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Conta as respostas de POST/GET /orders da BFF por status HTTP desde um instante (logs "HTTP request completed").
-# Uso: T0=$(date -u +%FT%TZ) ... ; labs/lab-06/count-responses.sh "$T0"
+# Uso: T0=$(date -u +%FT%TZ) ... ; labs/lab-02/count-responses.sh "$T0"
 source "$(dirname "$0")/../../scripts/lib/common.sh"
 require kubectl python3
 since="${1:?uso: count-responses.sh <RFC3339, ex.: \$(date -u +%FT%TZ)>}"

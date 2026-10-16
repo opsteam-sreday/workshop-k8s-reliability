@@ -8,7 +8,7 @@ on:
         description: Região AWS
         default: us-east-1
         required: true
-      student_id:
+      cluster_id:
         description: "ID do aluno, do roster (aluno01..aluno40 => cluster rw-<id>). O instrutor usa o dele (ex.: aluno01)"
         required: true
       confirm:
@@ -20,20 +20,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: workshop-env-rw-${{ inputs.student_id }}
+  group: workshop-env-rw-${{ inputs.cluster_id }}
   cancel-in-progress: false
 
 env:
   AWS_REGION: ${{ inputs.aws_region }}
-  STUDENT_ID: ${{ inputs.student_id }}
-  CLUSTER_NAME: rw-${{ inputs.student_id }}
+  CLUSTER_ID: ${{ inputs.cluster_id }}
+  CLUSTER_NAME: rw-${{ inputs.cluster_id }}
   ASSUME_YES: "true"
   KUBECTL_VERSION: v1.36.0
   HELM_VERSION: v4.3.0
 
 jobs:
   down:
-    if: inputs.confirm == format('rw-{0}', inputs.student_id)
+    if: inputs.confirm == format('rw-{0}', inputs.cluster_id)
     runs-on: ubuntu-latest
     environment: workshop
     timeout-minutes: 90
