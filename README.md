@@ -216,6 +216,7 @@ Três workflows executam os mesmos scripts do Quick start em um runner descartá
 | `images` | `scripts/images.sh all` — um job por app, passo a passo: tag → lock → testes → build amd64 → build arm64 → índice multi-arch. Roda em push na `main` que mexa em `apps/**`, manualmente ou chamado pelo `workshop-up` | região |
 | `workshop-up` | `make up` (chama `images`, depois setup + deploy + validate) | região, `student_id` (obrigatório; o instrutor usa o dele), `student_username`, validate on/off |
 | `workshop-down` | `make teardown` | região, `student_id`, `confirm` = `rw-<student_id>` |
+| `fleet-up` | `make fleet-up`: build único + um `workshop-up` por aluno em paralelo (matrix) | `students` (`id:username …`), região, `max_parallel`, validate on/off |
 
 `workshop-up` e `workshop-down` usam o mesmo grupo de `concurrency` por cluster (nunca rodam up e down ao mesmo tempo).
 

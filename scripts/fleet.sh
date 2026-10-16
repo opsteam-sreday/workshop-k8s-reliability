@@ -11,6 +11,8 @@
 #   access   (re)cria a role de cada aluno + access entry (após infrastructure/identity-center.sh)
 #   status   estado do cluster e da última validação de cada aluno
 #   down     teardown de todos os ambientes da turma (DELETE_IMAGES=true remove também as imagens)
+#   up-one   um aluno só (refazer/recuperar): scripts/fleet.sh up-one <roster.csv> <student_id>  (make student-up)
+#   down-one remove o ambiente de um aluno: scripts/fleet.sh down-one <roster.csv> <student_id>  (make student-down)
 #   profile  imprime o ~/.aws/config de um aluno: scripts/fleet.sh profile <roster.csv> <student_id>
 # Estado/logs por aluno: .workshop/fleet/rw-<id>/ (kubeconfig, overlay, credenciais HyperDX, up.log, down.log)
 export WORKSHOP_NO_CLUSTER=true   # cada aluno define o próprio CLUSTER_NAME (student_env)
@@ -18,7 +20,7 @@ source "$(dirname "$0")/lib/common.sh"
 require aws python3
 
 cmd="${1:-}"; roster="${2:-}"
-[[ -n "$cmd" && -f "$roster" ]] || fail "Uso: $0 quotas|up|access|status|down|profile <roster.csv> [student_id]"
+[[ -n "$cmd" && -f "$roster" ]] || fail "Uso: $0 quotas|up|access|status|down|up-one|down-one|profile <roster.csv> [student_id]"
 PARALLEL="${PARALLEL:-8}"
 FLEET_DIR="$REPO_ROOT/.workshop/fleet"
 account_id >/dev/null
@@ -97,6 +99,23 @@ case "$cmd" in
     "$REPO_ROOT/scripts/deploy.sh" --build-only
     info "Provisionando ${#ROWS[@]} ambientes (PARALLEL=${PARALLEL}); logs em $FLEET_DIR/rw-<id>/up.log"
     run_all student_up up.log
+    ;;
+  up-one|down-one)
+    # Mesmo fluxo de um aluno do "up"/"down", em primeiro plano (saída no terminal e no log do aluno).
+    sid="${3:?student_id (ex.: aluno07)}"; row="$(printf '%s\n' "${ROWS[@]}" | awk -v s="$sid" '$1 == s')"
+    [[ -n "$row" ]] || fail "Aluno '$sid' não está no roster $roster"
+    read -r sid username <<<"$row"
+    if [[ "$cmd" == up-one ]]; then
+      info "Imagens (${ECR_PREFIX}/*): build só do que ainda não está no ECR"
+      "$REPO_ROOT/scripts/deploy.sh" --build-only
+      ( student_env "$sid" 0; info "Provisionando rw-${sid}; log em $STATE_DIR/up.log"
+        student_up "$sid" "$username" 2>&1 | tee "$STATE_DIR/up.log" )
+      ok "rw-${sid} pronto. Acesso do aluno: scripts/fleet.sh profile $roster $sid"
+    else
+      warn "Isto removerá o ambiente rw-${sid} da conta ${AWS_ACCOUNT_ID}."
+      confirm "Confirmar remoção definitiva de rw-${sid}?" || fail "Cancelado"
+      ( student_env "$sid" 0; student_down "$sid" "$username" 2>&1 | tee "$STATE_DIR/down.log" )
+    fi
     ;;
   access) run_all student_access access.log ;;
   status)

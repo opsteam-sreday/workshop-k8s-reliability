@@ -122,7 +122,7 @@ alerts: ## (Re)cria webhook, saved searches e os 4 alertas no HyperDX
 
 ##@ Turma: um ambiente isolado por aluno (ROSTER=infrastructure/students.csv)
 ROSTER ?= infrastructure/students.csv
-.PHONY: fleet-quotas fleet-up fleet-access fleet-status fleet-down fleet-profile identity-center
+.PHONY: fleet-quotas fleet-up fleet-access fleet-status fleet-down fleet-profile identity-center student-up student-down
 fleet-quotas: ## Quotas da região x necessário para a turma
 	scripts/fleet.sh quotas $(ROSTER)
 
@@ -140,6 +140,12 @@ fleet-status: ## Estado do cluster e da validação de cada aluno
 
 fleet-down: ## Remove os ambientes da turma (DELETE_IMAGES=true remove as imagens)
 	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh down $(ROSTER)
+
+student-up: ## Um aluno do roster: imagens + setup/deploy/acesso/validação, em primeiro plano (STUDENT_ID=aluno07)
+	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh up-one $(ROSTER) $(STUDENT_ID)
+
+student-down: ## Remove o ambiente de um aluno do roster (STUDENT_ID=aluno07)
+	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh down-one $(ROSTER) $(STUDENT_ID)
 
 fleet-profile: ## ~/.aws/config de um aluno (STUDENT_ID=aluno01)
 	@scripts/fleet.sh profile $(ROSTER) $(STUDENT_ID)
