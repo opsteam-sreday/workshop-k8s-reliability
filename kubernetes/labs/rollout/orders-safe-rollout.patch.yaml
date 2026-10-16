@@ -1,0 +1,5 @@
+# Estratégia do manifest (kubernetes/apps/orders-api/deployment.yaml): sobe 1 Pod novo, espera ficar pronto, derruba 1 antigo.
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}

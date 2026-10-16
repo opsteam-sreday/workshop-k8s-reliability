@@ -1,8 +1,8 @@
-# LAB 05 — Probes, Graceful Shutdown & Topology Spread
+# LAB 05 — Probes & Graceful Shutdown
 
 > **Break it → Observe it → Understand it → Fix it → Validate it**
 >
-> Duração estimada: 55 min · Partes A–D (probes) ≈ 40 min · Parte E (topology spread) ≈ 15 min
+> Duração estimada: 40 min
 
 ---
 
@@ -39,10 +39,8 @@ tráfego e com o container. Para isso, a API admin (só `127.0.0.1`, via `kubect
 > Por que não `kill -STOP 1`? O Linux protege o PID 1 de um container: `SIGSTOP` enviado de dentro do próprio
 > container é ignorado. O `freeze` reproduz o mesmo efeito (processo vivo, mas travado).
 
-Probes protegem contra uma **réplica** com problema. Contra a perda de um **nó**, as APIs usam
-`topologySpreadConstraints` (`kubernetes/apps/*/deployment.yaml`): no máximo **1 réplica de diferença** entre os
-nós `apps` (`maxSkew: 1`, `topologyKey: kubernetes.io/hostname`, `whenUnsatisfiable: DoNotSchedule`). A parte E
-mostra a regra em ação: quando ela bloqueia, quando ela não ajuda e por que ela não rebalanceia sozinha.
+> Contra a perda de um **nó** (topology spread, drain) veja o [LAB 07](../lab-07/README.md), junto com affinity e
+> anti-affinity. Rollouts agressivos e PodDisruptionBudget estão no [LAB 06](../lab-06/README.md).
 
 ## 2. Hipótese
 
@@ -53,9 +51,6 @@ mostra a regra em ação: quando ela bloqueia, quando ela não ajuda e por que e
    as réplicas antigas continuam atendendo.
 5. Com a **Inventory fora do ar**, a Orders **continua pronta** (a readiness não verifica dependências): o erro
    aparece como `503 DEPENDENCY_UNAVAILABLE`, não como Pods `NotReady`.
-6. Com `maxSkew: 1` rígido, uma réplica fica `Pending` em vez de ir para um nó que já tem uma a mais — **mesmo que
-   esse nó tenha CPU livre**. E o spread só vale **no agendamento**: depois de um drain, as réplicas não voltam
-   sozinhas para o nó recuperado.
 
 ## 3. Pré-requisitos
 
@@ -257,107 +252,6 @@ labs/lab-05/count-responses.sh "$T0"
 scripts/fault.sh all reset
 ```
 
-### Parte E — topology spread (falha de nó)
-
-Mantenha o k6 rodando (terminal 3). No terminal 1, troque o painel por um que mostra **onde** cada réplica está:
-
-```bash
-# Terminal 1
-kubectl -n ecommerce get pods -w -o 'custom-columns=POD:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName'
-```
-
-Escolha como **nó A** um nó `apps` **sem** a Inventory (réplica única: drená-la derrubaria a dependência — veja o
-challenge 4):
-
-```bash
-INV_NODE=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api -o jsonpath='{.items[0].spec.nodeName}')
-export NODE_A=$(kubectl get nodes -l workload=apps -o name | sed 's#node/##' | grep -v "$INV_NODE" | head -1)
-export NODE_B=$(kubectl get nodes -l workload=apps -o name | sed 's#node/##' | grep -v "$NODE_A" | head -1)
-echo "A=$NODE_A  B=$NODE_B"
-```
-
-**E1 — distribuição inicial.** Cada API com 2 réplicas tem **uma em cada nó**:
-
-```bash
-kubectl -n ecommerce get pods -l 'app.kubernetes.io/name in (bff-api,orders-api)' -o wide --sort-by=.spec.nodeName
-```
-
-**E2 — a regra é rígida.** Primeiro desligue o **Cluster Autoscaler (CA)**: o componente que adiciona nós ao node
-group `apps` (2 a 5 nós) quando há Pods `Pending` por falta de espaço, e remove nós ociosos. Ligado, ele veria a
-réplica pendente deste passo e criaria um 3º nó em 2–4 min — um nó com 0 réplicas, onde ela cabe sem violar o
-`maxSkew` — e o bloqueio que você quer observar sumiria. "Desligar" é escalar o Deployment dele para 0:
-
-```bash
-kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=0
-kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler   # READY 0/0 = desligado
-```
-
-Agora ocupe a CPU livre **só do nó A** e peça 4 réplicas da Orders:
-
-```bash
-python3 labs/lab-03/fill-capacity.py --node $NODE_A --slack 100
-kubectl -n ecommerce patch hpa orders-api -p '{"spec":{"minReplicas":4}}'
-sleep 40
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api -o wide
-P=$(kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api --field-selector=status.phase=Pending -o name | head -1)
-kubectl -n ecommerce describe $P | sed -n '/Events/,$p'
-kubectl describe node $NODE_B | grep -A6 'Allocated resources'     # o nó B tem CPU livre
-```
-
-Libere o nó A e veja a réplica pendente subir **nele**:
-
-```bash
-kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast
-sleep 20; kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api -o wide
-kubectl -n ecommerce patch hpa orders-api -p '{"spec":{"minReplicas":2}}'      # volta a 2 (aguarde ~1 min)
-```
-
-```mermaid
-flowchart LR
-    subgraph A["nó A (ballast: 100m livres)"]
-        A1["orders #1"]
-    end
-    subgraph B["nó B (~740m livres)"]
-        B1["orders #2"]
-        B2["orders #3"]
-    end
-    P["orders #4<br/>Pending"] -. "Insufficient cpu" .-> A
-    P -. "3 × 1 violaria maxSkew 1" .-> B
-```
-
-Sem o ballast, o nó A volta a ter CPU e a réplica #4 sobe nele: **2 × 2**.
-
-**E3 — drain de um nó e o que acontece depois.**
-
-```mermaid
-flowchart LR
-    S0["1 × 1<br/>(BFF e Orders)"] -- "drain nó A<br/>0 erros" --> S1["tudo no nó B<br/>(nó A: SchedulingDisabled,<br/>fora da conta por nodeTaintsPolicy: Honor)"]
-    S1 -- "uncordon nó A" --> S2["60 s depois: ainda tudo no nó B<br/>(spread não move Pods)"]
-    S2 -- "rollout restart<br/>0 erros" --> S3["1 × 1 de novo"]
-```
-
-```bash
-export T0=$(date -u +%FT%TZ)
-kubectl drain $NODE_A --ignore-daemonsets --delete-emptydir-data
-sleep 30
-kubectl -n ecommerce get pods -o wide --sort-by=.spec.nodeName
-labs/lab-05/count-responses.sh "$T0"
-
-kubectl uncordon $NODE_A
-sleep 60
-kubectl -n ecommerce get pods -o wide --sort-by=.spec.nodeName           # ainda tudo no nó B?
-
-export T0=$(date -u +%FT%TZ)
-kubectl -n ecommerce rollout restart deploy/orders-api deploy/bff-api
-kubectl -n ecommerce rollout status deploy/orders-api && kubectl -n ecommerce rollout status deploy/bff-api
-kubectl -n ecommerce get pods -o wide --sort-by=.spec.nodeName
-labs/lab-05/count-responses.sh "$T0"
-
-# Religue o Cluster Autoscaler (desligado na E2). READY 1/1 = ligado.
-kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=1
-kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler
-```
-
 ## 7. Observações
 
 Valores medidos no cluster `rw-0001` (10 pedidos/s) durante a validação deste lab. Os seus tempos podem variar
@@ -418,20 +312,6 @@ Respostas da BFF na janela: **1160 × `201`, 6 × `504`, 2 × `409`** (de 1168).
 - Respostas da BFF em 45 s: **919 × `503`, 37 × `201`** — `503 DEPENDENCY_UNAVAILABLE` com `Retry-After`, um erro
   de **negócio** que o cliente sabe tratar.
 
-### E — topology spread
-
-| Passo | O que aparece |
-|---|---|
-| E1 | BFF e Orders: **1 réplica em cada nó `apps`** |
-| E2, 40 s depois | 3ª réplica no nó B; 4ª **`Pending`** com *"0/3 nodes are available: 1 Insufficient cpu, 1 node(s) didn't match pod topology spread constraints, 1 node(s) had untolerated taint(s) … preemption: … Preemption is not helpful for scheduling"* |
-| E2, nó B | `cpu 1190m (61%)` de 1930m: **~740m livres**, e mesmo assim a réplica não foi para lá (ficaria 3 × 1) |
-| E2, sem o ballast | a réplica pendente sobe **no nó A** em segundos → 2 × 2 |
-| E2, `minReplicas: 2` | o ReplicaSet remove réplicas mantendo o equilíbrio → 1 × 1 |
-| E3, drain | `evicting pod ecommerce/bff-api…`, `…orders-api…`; o drain respeita o PDB do CoreDNS (`Cannot evict pod as it would violate the pod's disruption budget`, nova tentativa em 5 s); tudo vai para o nó B |
-| E3, BFF durante o drain | **513 × `201`, 0 erros** (readiness + graceful shutdown da parte B) |
-| E3, 60 s após `uncordon` | **tudo continua no nó B**: o nó A voltou, mas nada se move |
-| E3, `rollout restart` | 1 réplica em cada nó de novo; BFF: **282 × `201`, 0 erros** |
-
 ## 8. Explicação técnica
 
 - **Readiness controla tráfego; liveness controla o processo.** Na A1 só a readiness falha: o EndpointSlice marca o
@@ -462,23 +342,6 @@ Respostas da BFF na janela: **1160 × `201`, 6 × `504`, 2 × `409`** (de 1168).
 - **Nesta implementação, readiness e liveness só divergem em dois casos:** o shutdown (os 5 s do `SIGTERM`) e o
   `not-ready` do lab. "Ainda não iniciou" já é coberto pela startup probe. Manter as duas rotas separadas custa
   zero e deixa a readiness pronta para motivos próprios **da réplica** (warm-up, manutenção, saturação local).
-- **Topology spread é uma regra de agendamento.** O scheduler a avalia só quando um Pod é criado:
-  - `maxSkew: 1` + `DoNotSchedule`: um Pod só vai para um nó se, depois disso, a diferença entre o nó com mais e o
-    com menos réplicas for ≤ 1. Por isso a 4ª réplica (E2) esperou o nó A, ignorando a CPU livre do nó B. Com
-    `ScheduleAnyway` seria só uma preferência: ela iria para o B (3 × 1).
-  - `nodeAffinityPolicy` (padrão `Honor`) + o `nodeSelector workload=apps`: o nó `observability` não conta.
-    `nodeTaintsPolicy: Honor`: nós com taint — inclusive o `node.kubernetes.io/unschedulable` do cordon/drain — saem
-    da conta. Sem isso, o nó drenado seria um domínio com 0 réplicas e **todo** Pod novo ficaria `Pending` (E3).
-  - `matchLabelKeys: [pod-template-hash]`: só o ReplicaSet atual conta; num rollout as réplicas antigas não
-    desequilibram a distribuição das novas.
-  - Nada rebalanceia depois (E3): o spread não move Pods que já rodam. Para redistribuir, um `rollout restart` (ou o
-    [descheduler](https://github.com/kubernetes-sigs/descheduler) com `RemovePodsViolatingTopologySpreadConstraint`).
-    Entre o `uncordon` e o restart, perder o nó B derrubaria **todas** as réplicas.
-- **Spread + Cluster Autoscaler:** com o CA ligado, a réplica pendente da E2 faria o CA criar um nó novo (um domínio
-  com 0 réplicas, onde ela cabe). Por isso o CA fica desligado nesse passo.
-- **Spread não protege réplica única.** A Inventory tem 1 réplica (estado em memória, `Recreate`): qualquer drain
-  do nó dela derruba a dependência até o Pod subir em outro nó.
-
 ## 9. Correção
 
 Não há bug a corrigir: as falhas foram provocadas. A "correção" de cada parte é desfazer a causa:
@@ -488,9 +351,6 @@ scripts/fault.sh orders ready            # A1 (todas as réplicas)
 # A2: nada — a liveness já reiniciou a réplica
 kubectl -n ecommerce rollout undo deploy/orders-api    # C: volta para a revisão anterior (sem ORDERS_TABLE_NAME)
 scripts/fault.sh all reset               # D: remove a falha da Inventory e reseta os Circuit Breakers
-kubectl uncordon $NODE_A                 # E: nó de volta ao agendamento
-kubectl -n ecommerce rollout restart deploy/orders-api deploy/bff-api   # E: redistribui as réplicas
-kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=1   # E: CA ligado
 ```
 
 ## 10. Validação
@@ -501,8 +361,6 @@ kubectl -n ecommerce get deploy orders-api -o jsonpath='{.spec.template.spec.con
 # não deve conter ORDERS_TABLE_NAME
 scripts/fault.sh orders health           # forced_not_ready=false em todos os Pods
 scripts/fault.sh orders cb               # CLOSED (após ~15 s sem falhas)
-kubectl get nodes -l workload=apps       # nenhum SchedulingDisabled
-kubectl -n ecommerce get pods -l 'app.kubernetes.io/name in (bff-api,orders-api)' -o wide   # 1 réplica por nó
 ```
 
 Resumo dos cenários (valores medidos no `rw-0001`, 10 pedidos/s):
@@ -514,8 +372,6 @@ Resumo dos cenários (valores medidos no `rw-0001`, 10 pedidos/s):
 | B — rollout | `rollout restart deploy/orders-api` | Pod antigo sai do Service antes de parar; novo pronto antes do antigo sair | log `SIGTERM recebido: readiness=false, aguardando 5.0s`; BFF 0 erros |
 | C — deploy quebrado | `set env ORDERS_TABLE_NAME=tabela-que-nao-existe` | Pod novo nunca `1/1`; restart ~120 s; rollout travado; antigos atendem | `/health/startup` 503 com `AccessDeniedException`; `rollout status` timeout; BFF 0 erros |
 | D — Inventory fora | `fault.sh inventory http-503` | Orders segue `1/1`, CB `OPEN`/`HALF_OPEN`, erro de negócio | `fault.sh orders cb`; BFF `503` (919 de 956) |
-| E2 — skew rígido | ballast no nó A + `minReplicas: 4` | réplica #4 `Pending` com ~740m livres no nó B; sobe no nó A sem ballast | evento `didn't match pod topology spread constraints` |
-| E3 — drain e volta | `drain` → `uncordon` → `rollout restart` | tudo no nó B; nada rebalanceia após `uncordon`; restart redistribui | `get pods -o wide`; BFF 0 erros (513 e 282) |
 
 ## 11. Challenge
 
@@ -526,9 +382,6 @@ Resumo dos cenários (valores medidos no `rw-0001`, 10 pedidos/s):
 3. Troque o `SHUTDOWN_DELAY_SECONDS` da aplicação por um `preStop` hook no Deployment da Orders
    (`lifecycle.preStop.sleep.seconds: 5`) e repita a parte B. O resultado muda? Onde a configuração fica mais
    visível para quem opera o cluster? (Ao terminar: `kubectl -n ecommerce rollout undo deploy/orders-api`.)
-4. Repita a E3 drenando o nó **da Inventory**. Quantos `503` a BFF devolve e por quanto tempo? O que mudaria com 2
-   réplicas da Inventory — e por que hoje ela não pode ter 2 (estoque em memória)?
-5. Repita a E2 com o Cluster Autoscaler **ligado**. Quanto tempo até a réplica pendente rodar, e em qual nó?
 
 ## 12. Critérios de sucesso
 
@@ -537,12 +390,11 @@ Resumo dos cenários (valores medidos no `rw-0001`, 10 pedidos/s):
 - [ ] B: rollout com 0 erros e o log `SIGTERM recebido` no Pod antigo.
 - [ ] C: o Pod novo nunca ficou pronto, o `last_error` explicou a causa e a BFF teve 0 erros.
 - [ ] D: a Orders continuou `1/1` com a Inventory fora, e o erro chegou como `503 DEPENDENCY_UNAVAILABLE`.
-- [ ] E: a 4ª réplica ficou `Pending` com CPU livre no outro nó, e após o `uncordon` nada se moveu até o restart.
 - [ ] Você sabe explicar por que a liveness **não** deve verificar o DynamoDB nem a Inventory.
 
 ## 13. Reset
 
 ```bash
 kubectl -n loadtest delete jobs -l app.kubernetes.io/name=k6     # se o k6 ainda estiver rodando
-scripts/reset.sh       # remove overrides (ORDERS_TABLE_NAME etc.), falhas e ballasts; uncordon dos nós apps; CA ligado
+scripts/reset.sh       # remove overrides (ORDERS_TABLE_NAME etc.) e falhas
 ```

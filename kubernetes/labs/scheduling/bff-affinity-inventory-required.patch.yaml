@@ -1,0 +1,10 @@
+# LAB 07 D2 — podAffinity REQUIRED: BFF só no nó da Inventory. Somado ao spread maxSkew 1 (DoNotSchedule), a 2ª
+# réplica não tem nó válido (affinity exige o nó da Inventory; o spread proíbe 2 × 0) e fica Pending.
+spec:
+  template:
+    spec:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector: {matchLabels: {app.kubernetes.io/name: inventory-api}}

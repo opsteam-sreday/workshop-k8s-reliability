@@ -4,7 +4,7 @@
 >
 > **Metodologia de todos os labs:** Break it → Observe it → Understand it → Fix it → Validate it.
 
-## 1. Agenda sugerida (4h20)
+## 1. Agenda sugerida (5h45)
 
 | Horário | Bloco | Duração |
 |---|---|---|
@@ -14,8 +14,11 @@
 | 1:40 | Intervalo | 10 min |
 | 1:50 | **LAB 03** — QoS & PriorityClass | 45 min |
 | 2:35 | **LAB 04** — Circuit Breaker | 35 min |
-| 3:10 | **LAB 05** — Probes, Graceful Shutdown & Topology Spread | 55 min |
-| 4:05 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
+| 3:10 | **LAB 05** — Probes & Graceful Shutdown | 40 min |
+| 3:50 | Intervalo | 10 min |
+| 4:00 | **LAB 06** — RollingUpdate & PodDisruptionBudget | 40 min |
+| 4:40 | **LAB 07** — Affinity, Anti-affinity & Topology Spread | 50 min |
+| 5:30 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
 
 **Extra (fora da agenda):** [LAB X1 — ClickStack Alerting](../labs/.extras/lab-x1/README.md) (anti-pattern de alertas por
 contagem de logs, ~40 min). Use se sobrar tempo ou como material de estudo depois do evento.
@@ -145,19 +148,38 @@ na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastruct
   - Timeout após o commit (`slow-after-commit`): a reserva **aconteceu**. Por isso não há compensação cega, e o retry reutiliza a mesma reserva (idempotência na Inventory).
   - Readiness não verifica a Inventory, de propósito. Se verificasse, todas as réplicas da Orders sairiam do Service (cascata).
 
-### LAB 05 — Probes, Graceful Shutdown & Topology Spread
+### LAB 05 — Probes & Graceful Shutdown
 
 - **Break:** `fault.sh orders not-ready|freeze <s> <pod>` (uma réplica), `rollout restart` sob carga, deploy com tabela
-  errada (`set env ORDERS_TABLE_NAME=…`), Inventory 503, e na parte E: ballast em um nó + Orders com 4 réplicas, drain.
+  errada (`set env ORDERS_TABLE_NAME=…`) e Inventory 503.
 - **Observe:** `labs/lab-05/watch-pod.sh <pod>` (READY, RESTARTS, se recebe tráfego) e
   `labs/lab-05/count-responses.sh "$T0"` (respostas da BFF por status na janela). Valores de referência na seção 7 do lab.
 - **Pontos de discussão:**
   - Readiness decide **tráfego**; liveness decide **restart**. No `freeze`, o Pod sai do Service (~14 s) **antes** de
     ser reiniciado (~36 s); entre `Killing` e `Started` passam 30 s (processo travado não trata o `SIGTERM`).
   - Startup + `maxUnavailable: 0`: um deploy quebrado nunca recebe tráfego e o rollout para.
-  - Topology spread é regra de **agendamento**: com `DoNotSchedule` a réplica fica `Pending` mesmo com CPU livre no
-    outro nó; depois de um drain nada rebalanceia até um `rollout restart`.
-  - A parte E desliga o Cluster Autoscaler: num cluster por aluno isso só afeta o próprio aluno.
+
+### LAB 06 — RollingUpdate & PodDisruptionBudget
+
+- **Break:** rollout com `maxSurge 0 / maxUnavailable 100%` sob carga, rollout da Inventory (`Recreate`), PDB da Orders
+  com `maxUnavailable: 0` durante um `kubectl drain`, `kubectl delete pod` e drain do nó da Inventory.
+- **Pontos de discussão:**
+  - `maxSurge`/`maxUnavailable` decidem a capacidade **durante** o rollout; com 1/0 nunca há menos réplicas prontas.
+  - A PDB só vale para **eviction** (drain, Cluster Autoscaler, upgrade de nó). Não protege contra `kubectl delete pod`,
+    rollout do Deployment nem falha de nó.
+  - PDB com réplica única (Inventory) não protege nada: ou bloqueia toda manutenção (`minAvailable: 1`) ou deixa
+    remover a única réplica (`maxUnavailable: 1`). A saída é ter réplicas — que a Inventory (estado em memória) não pode.
+
+### LAB 07 — Affinity, Anti-affinity & Topology Spread
+
+- **Break:** `nodeAffinity` para uma zona inexistente (required × preferred), `podAntiAffinity` required na Orders
+  (3ª réplica `Pending`; sem `matchLabelKeys` o próprio rollout trava), anti-affinity preferred (empilha), `podAffinity`
+  da BFF com a Inventory, e o topology spread (skew rígido com ballast, drain sem rebalanceamento).
+- **Pontos de discussão:**
+  - *required* bloqueia (Pod `Pending`), *preferred* só pesa no score; o scheduler não move Pods depois.
+  - Anti-affinity required = no máximo 1 por domínio (escala limitada ao número de nós); topology spread = equilíbrio
+    (permite N por nó). Combinar regras *required* pode não ter solução.
+  - As partes B e E desligam o Cluster Autoscaler: num cluster por aluno isso só afeta o próprio aluno.
 
 ### LAB X1 — ClickStack Alerting (extra, fora da agenda)
 

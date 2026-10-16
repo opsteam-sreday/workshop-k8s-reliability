@@ -330,8 +330,8 @@ labx1-crash: ## Falha sem log ERROR: crash da Orders após a reserva
 labx1-stop: ## Remove as falhas do LAB X1
 	scripts/fault.sh all reset
 
-##@ LAB 05 — Probes, Graceful Shutdown & Topology Spread (POD=<pod da Orders>, NODE_A=<nó apps>)
-.PHONY: lab05-load lab05-watch lab05-not-ready lab05-ready lab05-freeze lab05-rollout lab05-break lab05-undo lab05-spread-fill lab05-spread-release lab05-drain lab05-rebalance
+##@ LAB 05 — Probes & Graceful Shutdown (POD=<pod da Orders>)
+.PHONY: lab05-load lab05-watch lab05-not-ready lab05-ready lab05-freeze lab05-rollout lab05-break lab05-undo
 lab05-load: ## Carga contínua com retry do cliente (RATE=10 DURATION=30m)
 	scripts/k6.sh create-orders.js RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),30m)
 
@@ -358,19 +358,96 @@ lab05-undo: ## C: desfaz o deploy quebrado
 	kubectl -n ecommerce rollout undo deploy/orders-api
 	kubectl -n ecommerce rollout status deploy/orders-api
 
-lab05-spread-fill: ## E2: CA off + ocupa só o nó A + Orders com 4 réplicas (NODE_A=...)
+##@ LAB 06 — RollingUpdate & PodDisruptionBudget (NODE_A=<nó apps>)
+.PHONY: lab06-load lab06-rollout lab06-aggressive lab06-safe lab06-recreate lab06-pdb-zero lab06-pdb-restore lab06-drain lab06-restore
+lab06-load: ## Carga contínua com retry do cliente (RATE=10 DURATION=30m)
+	scripts/k6.sh create-orders.js RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),30m)
+
+lab06-rollout: ## A: rollout seguro da Orders (maxSurge 1 / maxUnavailable 0)
+	$(NS) rollout restart deploy/orders-api
+	$(NS) rollout status deploy/orders-api
+
+lab06-aggressive: ## B: estratégia agressiva (maxSurge 0 / maxUnavailable 100%) + rollout
+	$(NS) patch deploy orders-api --patch-file kubernetes/labs/rollout/orders-aggressive-rollout.patch.yaml
+	$(NS) rollout restart deploy/orders-api
+	$(NS) rollout status deploy/orders-api
+
+lab06-safe: ## B: volta a estratégia segura (1/0)
+	$(NS) patch deploy orders-api --patch-file kubernetes/labs/rollout/orders-safe-rollout.patch.yaml
+
+lab06-recreate: ## C: rollout da Inventory (strategy Recreate)
+	$(NS) rollout restart deploy/inventory-api
+	$(NS) rollout status deploy/inventory-api
+
+lab06-pdb-zero: ## D: PDB da Orders com maxUnavailable 0 (bloqueia drain)
+	$(NS) patch pdb orders-api --type merge --patch-file kubernetes/labs/rollout/orders-pdb-zero.patch.yaml
+
+lab06-pdb-restore: ## D: PDB da Orders de volta a maxUnavailable 1
+	$(NS) patch pdb orders-api --type merge --patch-file kubernetes/labs/rollout/orders-pdb-restore.patch.yaml
+
+lab06-drain: ## D/E: CA off + drain do nó A (timeout 60 s) (NODE_A=...)
+	$(CA_SCALE) --replicas=0
+	kubectl drain $(NODE_A) --ignore-daemonsets --delete-emptydir-data --timeout=60s
+
+lab06-restore: ## Uncordon + redistribui BFF/Orders + CA on + estoque inicial
+	kubectl uncordon -l workload=apps
+	$(NS) rollout restart deploy/orders-api deploy/bff-api
+	$(CA_SCALE) --replicas=1
+	scripts/fault.sh inventory reset-stock
+
+##@ LAB 07 — Affinity, Anti-affinity & Topology Spread (NODE_A=<nó apps>, ZONE_A=<zona do nó A>, N=<réplicas>)
+.PHONY: lab07-load lab07-watch lab07-zone-required-missing lab07-zone-preferred-missing lab07-zone-required lab07-anti-naive lab07-anti-required lab07-anti-preferred lab07-replicas lab07-affinity-preferred lab07-affinity-required lab07-clear lab07-spread-fill lab07-spread-release lab07-drain lab07-rebalance
+lab07-load: ## Carga contínua com retry do cliente (RATE=10 DURATION=45m)
+	scripts/k6.sh create-orders.js RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),45m)
+
+lab07-watch: ## Painel: Pods e o nó de cada um
+	$(NS) get pods -w -o 'custom-columns=POD:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName'
+
+lab07-zone-required-missing: ## A1: BFF exige uma zona inexistente (required)
+	$(NS) patch deploy bff-api --patch-file kubernetes/labs/scheduling/bff-zone-required-missing.patch.yaml
+
+lab07-zone-preferred-missing: ## A2: BFF prefere uma zona inexistente (preferred)
+	$(NS) patch deploy bff-api --patch-file kubernetes/labs/scheduling/bff-zone-preferred-missing.patch.yaml
+
+lab07-zone-required: ## A3: BFF exige a zona do nó A (ZONE_A=...)
+	$(NS) patch deploy bff-api --type strategic --patch "$$(sed "s/__ZONE__/$(ZONE_A)/" kubernetes/labs/scheduling/bff-zone-required.patch.yaml)"
+
+lab07-anti-naive: ## B1: CA off + anti-affinity required na Orders SEM matchLabelKeys
+	$(CA_SCALE) --replicas=0
+	$(NS) patch deploy orders-api --patch-file kubernetes/labs/scheduling/orders-anti-required-naive.patch.yaml
+
+lab07-anti-required: ## B2: anti-affinity required na Orders (com matchLabelKeys)
+	$(NS) patch deploy orders-api --patch-file kubernetes/labs/scheduling/orders-anti-required.patch.yaml
+
+lab07-anti-preferred: ## C: anti-affinity preferred na Orders
+	$(NS) patch deploy orders-api --patch-file kubernetes/labs/scheduling/orders-anti-preferred.patch.yaml
+
+lab07-replicas: ## Orders com N réplicas mínimas no HPA (N=3)
+	$(NS) patch hpa orders-api -p '{"spec":{"minReplicas":$(or $(N),3)}}'
+
+lab07-affinity-preferred: ## D1: BFF prefere o nó da Inventory (podAffinity preferred)
+	$(NS) patch deploy bff-api --patch-file kubernetes/labs/scheduling/bff-affinity-inventory-preferred.patch.yaml
+
+lab07-affinity-required: ## D2: BFF exige o nó da Inventory (podAffinity required)
+	$(NS) patch deploy bff-api --patch-file kubernetes/labs/scheduling/bff-affinity-inventory-required.patch.yaml
+
+lab07-clear: ## Remove as afinidades das 3 APIs + CA on
+	for d in bff-api orders-api inventory-api; do $(NS) patch deploy $$d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml; done
+	$(CA_SCALE) --replicas=1
+
+lab07-spread-fill: ## E2: CA off + ocupa só o nó A + Orders com 4 réplicas (NODE_A=...)
 	$(CA_SCALE) --replicas=0
 	labs/lab-03/fill-capacity.py --node $(NODE_A) --slack 100
 	$(NS) patch hpa orders-api -p '{"spec":{"minReplicas":4}}'
 
-lab05-spread-release: ## E2: remove o ballast e volta a Orders para 2 réplicas
+lab07-spread-release: ## E2: remove o ballast e volta a Orders para 2 réplicas
 	kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast
 	$(NS) patch hpa orders-api -p '{"spec":{"minReplicas":2}}'
 
-lab05-drain: ## E3: drena o nó A (NODE_A=...)
+lab07-drain: ## E3: drena o nó A (NODE_A=...)
 	kubectl drain $(NODE_A) --ignore-daemonsets --delete-emptydir-data
 
-lab05-rebalance: ## E3: uncordon do nó A + rollout restart (redistribui) + CA on (NODE_A=...)
+lab07-rebalance: ## E3: uncordon do nó A + rollout restart (redistribui) + CA on (NODE_A=...)
 	kubectl uncordon $(NODE_A)
 	$(NS) rollout restart deploy/orders-api deploy/bff-api
 	$(NS) rollout status deploy/orders-api

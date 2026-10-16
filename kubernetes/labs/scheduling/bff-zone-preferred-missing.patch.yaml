@@ -1,0 +1,11 @@
+# LAB 07 A2 — a mesma zona inexistente, mas PREFERRED: é só pontuação; o Pod é agendado mesmo assim.
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - {key: topology.kubernetes.io/zone, operator: In, values: [zona-inexistente]}

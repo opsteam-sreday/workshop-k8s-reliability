@@ -1,0 +1,11 @@
+# LAB 07 A3 — nodeAffinity REQUIRED para a zona do nó A (__ZONE__ é substituído no comando do lab).
+# Com nodeAffinityPolicy: Honor (padrão), o topology spread só conta os nós dessa zona.
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: topology.kubernetes.io/zone, operator: In, values: [__ZONE__]}

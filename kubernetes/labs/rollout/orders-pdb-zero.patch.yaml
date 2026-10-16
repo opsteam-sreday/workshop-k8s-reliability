@@ -1,0 +1,5 @@
+# LAB 06, parte D: nenhuma evicção voluntária permitida para a Orders (ALLOWED DISRUPTIONS 0).
+# `kubectl drain` passa a ficar retentando a evicção dos Pods da Orders.
+# Reverter: orders-pdb-restore.patch.yaml (ou `kubectl apply -k` do overlay, maxUnavailable: 1).
+spec:
+  maxUnavailable: 0

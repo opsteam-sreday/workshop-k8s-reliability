@@ -1,0 +1,6 @@
+# LAB 07 — remove qualquer affinity aplicada pelo lab (strategic merge: null apaga o campo; idempotente).
+# Uso: kubectl -n ecommerce patch deploy <api> --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+spec:
+  template:
+    spec:
+      affinity: null

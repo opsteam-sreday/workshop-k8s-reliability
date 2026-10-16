@@ -1,0 +1,3 @@
+# Valor do manifest (kubernetes/apps/orders-api/pdb.yaml): uma evicção voluntária por vez.
+spec:
+  maxUnavailable: 1
