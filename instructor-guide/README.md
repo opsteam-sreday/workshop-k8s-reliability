@@ -4,7 +4,7 @@
 >
 > **Metodologia de todos os labs:** Break it → Observe it → Understand it → Fix it → Validate it.
 
-## 1. Agenda sugerida (4h55)
+## 1. Agenda sugerida (4h20)
 
 | Horário | Bloco | Duração |
 |---|---|---|
@@ -14,9 +14,11 @@
 | 1:40 | Intervalo | 10 min |
 | 1:50 | **LAB 03** — QoS & PriorityClass | 45 min |
 | 2:35 | **LAB 04** — Circuit Breaker | 35 min |
-| 3:10 | **LAB 05** — ClickStack Alerting (anti-pattern) | 35 min |
-| 3:45 | **LAB 06** — Probes, Graceful Shutdown & Topology Spread | 55 min |
-| 4:40 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
+| 3:10 | **LAB 05** — Probes, Graceful Shutdown & Topology Spread | 55 min |
+| 4:05 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
+
+**Extra (fora da agenda):** [LAB X1 — ClickStack Alerting](../labs/.extras/lab-x1/README.md) (anti-pattern de alertas por
+contagem de logs, ~40 min). Use se sobrar tempo ou como material de estudo depois do evento.
 
 **Dica:** o scale-out de nós do LAB 02 leva de 2 a 4 minutos. Use esse tempo para discutir HPA × CA. Já o scale-down leva cerca de 4 minutos depois que a carga para (stabilization de 120 s + `scale-down-unneeded-time` de 2 min). Não espere por ele: siga para o intervalo.
 
@@ -143,12 +145,26 @@ na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastruct
   - Timeout após o commit (`slow-after-commit`): a reserva **aconteceu**. Por isso não há compensação cega, e o retry reutiliza a mesma reserva (idempotência na Inventory).
   - Readiness não verifica a Inventory, de propósito. Se verificasse, todas as réplicas da Orders sairiam do Service (cascata).
 
-### LAB 05 — ClickStack Alerting
+### LAB 05 — Probes, Graceful Shutdown & Topology Spread
+
+- **Break:** `fault.sh orders not-ready|freeze <s> <pod>` (uma réplica), `rollout restart` sob carga, deploy com tabela
+  errada (`set env ORDERS_TABLE_NAME=…`), Inventory 503, e na parte E: ballast em um nó + Orders com 4 réplicas, drain.
+- **Observe:** `labs/lab-05/watch-pod.sh <pod>` (READY, RESTARTS, se recebe tráfego) e
+  `labs/lab-05/count-responses.sh "$T0"` (respostas da BFF por status na janela). Valores de referência na seção 7 do lab.
+- **Pontos de discussão:**
+  - Readiness decide **tráfego**; liveness decide **restart**. No `freeze`, o Pod sai do Service (~14 s) **antes** de
+    ser reiniciado (~36 s); entre `Killing` e `Started` passam 30 s (processo travado não trata o `SIGTERM`).
+  - Startup + `maxUnavailable: 0`: um deploy quebrado nunca recebe tráfego e o rollout para.
+  - Topology spread é regra de **agendamento**: com `DoNotSchedule` a réplica fica `Pending` mesmo com CPU livre no
+    outro nó; depois de um drain nada rebalanceia até um `rollout restart`.
+  - A parte E desliga o Cluster Autoscaler: num cluster por aluno isso só afeta o próprio aluno.
+
+### LAB X1 — ClickStack Alerting (extra, fora da agenda)
 
 - **Break:** falhas na Orders (`db FAIL_READS`, Inventory 503) e na Inventory (`http-503 RESERVATIONS` e `QUERIES`) + `inventory-errors.js`.
 - **Observe:**
   - As 4 alertas disparam. O webhook recebe as notificações (`kubectl -n observability logs deploy/alert-webhook`).
-  - `labs/lab-05/compare-counts.sh` compara: COUNT(logs ERROR) ≈ **2×** as requisições reais (log contextual + log de conclusão). Os spans HTTP SERVER e a métrica `http.server.request.duration` mostram o número verdadeiro.
+  - `labs/.extras/lab-x1/compare-counts.sh` compara: COUNT(logs ERROR) ≈ **2×** as requisições reais (log contextual + log de conclusão). Os spans HTTP SERVER e a métrica `http.server.request.duration` mostram o número verdadeiro.
 - **Pontos de discussão:**
   - O alerta conta **linhas de log**, não requisições. Mudar o formato de log (ex.: adicionar um `log.error` de contexto) muda o alerta sem mudar a realidade.
   - Falhas sem ERROR: um crash (`crash-after-reservation`, exit 137) não gera log de conclusão. O 503 aparece na BFF, mas nenhum ERROR aparece na Orders para aquela rota (consulta (e) do script).
@@ -169,8 +185,8 @@ na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastruct
 | 03 | Qual a correção para a Inventory? | `critical-services` (a mesma prioridade do caminho crítico) + capacidade (CA) + requests realistas. Na fase 2: réplicas com estado compartilhado + PDB |
 | 04 | Por que não fazer retry na BFF também? | Amplificação multiplicativa. Além disso, a BFF não sabe se o POST foi aplicado. O cliente final repete com a mesma Idempotency-Key, respeitando `Retry-After` |
 | 04 | Com 5 réplicas da Orders, quantas falhas até "todo o sistema" abrir o circuito? | Cada réplica precisa de 5 falhas consecutivas próprias. Como o tráfego é distribuído, o total é ≈ 25 falhas, e o comportamento é inconsistente entre réplicas (estado local) |
-| 05 | Por que o alerta "Orders Creation Errors" mostra o dobro das falhas? | Cada 503 gera 2 logs ERROR com a mesma rota e status: "Inventory API indisponível" e "HTTP request completed" |
-| 05 | Proponha o alerta correto | Taxa de 5xx sobre o total por rota a partir de `http.server.request.duration` (count por `http.response.status_code`) ou de spans `SpanKind=Server`. Com janela e burn rate (fase 2) |
+| X1 | Por que o alerta "Orders Creation Errors" mostra o dobro das falhas? | Cada 503 gera 2 logs ERROR com a mesma rota e status: "Inventory API indisponível" e "HTTP request completed" |
+| X1 | Proponha o alerta correto | Taxa de 5xx sobre o total por rota a partir de `http.server.request.duration` (count por `http.response.status_code`) ou de spans `SpanKind=Server`. Com janela e burn rate (fase 2) |
 
 ## 5. Troubleshooting
 

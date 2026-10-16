@@ -307,70 +307,70 @@ lab04-slow-commit: ## Reserva aplicada + resposta lenta (MS=800)
 lab04-recover: ## Remove falhas da Inventory (CB: HALF_OPEN -> CLOSED)
 	scripts/fault.sh inventory reset
 
-##@ LAB 05 — ClickStack Alerting
-.PHONY: lab05-trigger lab05-load lab05-webhook lab05-compare lab05-crash lab05-stop
-lab05-trigger: ## Injeta falhas que disparam os 4 alertas
+##@ LAB X1 (extra, labs/.extras/lab-x1) — ClickStack Alerting
+.PHONY: labx1-trigger labx1-load labx1-webhook labx1-compare labx1-crash labx1-stop
+labx1-trigger: ## Injeta falhas que disparam os 4 alertas
 	scripts/fault.sh inventory error-rate 0.5
 	scripts/fault.sh orders db FAIL_READS
 
-lab05-load: ## Tráfego de erros (RATE=4 DURATION=3m)
+labx1-load: ## Tráfego de erros (RATE=4 DURATION=3m)
 	scripts/k6.sh inventory-errors.js RATE=$(or $(RATE),4) DURATION=$(or $(DURATION),3m)
 
-lab05-webhook: ## Alertas recebidos pelo webhook
+labx1-webhook: ## Alertas recebidos pelo webhook
 	kubectl -n observability exec deploy/alert-webhook -- python -c "import json,urllib.request; \
 	d=json.loads(urllib.request.urlopen('http://127.0.0.1:8080/alerts').read()); print('recebidos:', d['count']); \
 	[print(a['received_at'][11:19], a['payload'].get('alert'), a['payload'].get('state'), 'value=' + str(a['payload'].get('value'))) for a in d['alerts']]"
 
-lab05-compare: ## COUNT(logs) vs requisições reais (MINUTES=15)
-	labs/lab-05/compare-counts.sh $(MINUTES)
+labx1-compare: ## COUNT(logs) vs requisições reais (MINUTES=15)
+	labs/.extras/lab-x1/compare-counts.sh $(MINUTES)
 
-lab05-crash: ## Falha sem log ERROR: crash da Orders após a reserva
+labx1-crash: ## Falha sem log ERROR: crash da Orders após a reserva
 	scripts/fault.sh orders crash-after-reservation
 
-lab05-stop: ## Remove as falhas do LAB 05
+labx1-stop: ## Remove as falhas do LAB X1
 	scripts/fault.sh all reset
 
-##@ LAB 06 — Probes, Graceful Shutdown & Topology Spread (POD=<pod da Orders>, NODE_A=<nó apps>)
-.PHONY: lab06-load lab06-watch lab06-not-ready lab06-ready lab06-freeze lab06-rollout lab06-break lab06-undo lab06-spread-fill lab06-spread-release lab06-drain lab06-rebalance
-lab06-load: ## Carga contínua com retry do cliente (RATE=10 DURATION=30m)
+##@ LAB 05 — Probes, Graceful Shutdown & Topology Spread (POD=<pod da Orders>, NODE_A=<nó apps>)
+.PHONY: lab05-load lab05-watch lab05-not-ready lab05-ready lab05-freeze lab05-rollout lab05-break lab05-undo lab05-spread-fill lab05-spread-release lab05-drain lab05-rebalance
+lab05-load: ## Carga contínua com retry do cliente (RATE=10 DURATION=30m)
 	scripts/k6.sh create-orders.js RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),30m)
 
-lab06-watch: ## Painel do Pod: READY, RESTARTS e se recebe tráfego (POD=...)
-	labs/lab-06/watch-pod.sh $(POD)
+lab05-watch: ## Painel do Pod: READY, RESTARTS e se recebe tráfego (POD=...)
+	labs/lab-05/watch-pod.sh $(POD)
 
-lab06-not-ready: ## A1: readiness 503 / liveness 200 em UM Pod (POD=...)
+lab05-not-ready: ## A1: readiness 503 / liveness 200 em UM Pod (POD=...)
 	scripts/fault.sh orders not-ready $(POD)
 
-lab06-ready: ## Desfaz o not-ready (todas as réplicas)
+lab05-ready: ## Desfaz o not-ready (todas as réplicas)
 	scripts/fault.sh orders ready
 
-lab06-freeze: ## A2: trava o event loop de UM Pod por 90 s (POD=...)
+lab05-freeze: ## A2: trava o event loop de UM Pod por 90 s (POD=...)
 	scripts/fault.sh orders freeze 90 $(POD)
 
-lab06-rollout: ## B: rollout da Orders sob carga
+lab05-rollout: ## B: rollout da Orders sob carga
 	kubectl -n ecommerce rollout restart deploy/orders-api
 	kubectl -n ecommerce rollout status deploy/orders-api
 
-lab06-break: ## C: deploy quebrado (tabela inexistente)
+lab05-break: ## C: deploy quebrado (tabela inexistente)
 	kubectl -n ecommerce set env deploy/orders-api ORDERS_TABLE_NAME=tabela-que-nao-existe
 
-lab06-undo: ## C: desfaz o deploy quebrado
+lab05-undo: ## C: desfaz o deploy quebrado
 	kubectl -n ecommerce rollout undo deploy/orders-api
 	kubectl -n ecommerce rollout status deploy/orders-api
 
-lab06-spread-fill: ## E2: CA off + ocupa só o nó A + Orders com 4 réplicas (NODE_A=...)
+lab05-spread-fill: ## E2: CA off + ocupa só o nó A + Orders com 4 réplicas (NODE_A=...)
 	$(CA_SCALE) --replicas=0
 	labs/lab-03/fill-capacity.py --node $(NODE_A) --slack 100
 	$(NS) patch hpa orders-api -p '{"spec":{"minReplicas":4}}'
 
-lab06-spread-release: ## E2: remove o ballast e volta a Orders para 2 réplicas
+lab05-spread-release: ## E2: remove o ballast e volta a Orders para 2 réplicas
 	kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast
 	$(NS) patch hpa orders-api -p '{"spec":{"minReplicas":2}}'
 
-lab06-drain: ## E3: drena o nó A (NODE_A=...)
+lab05-drain: ## E3: drena o nó A (NODE_A=...)
 	kubectl drain $(NODE_A) --ignore-daemonsets --delete-emptydir-data
 
-lab06-rebalance: ## E3: uncordon do nó A + rollout restart (redistribui) + CA on (NODE_A=...)
+lab05-rebalance: ## E3: uncordon do nó A + rollout restart (redistribui) + CA on (NODE_A=...)
 	kubectl uncordon $(NODE_A)
 	$(NS) rollout restart deploy/orders-api deploy/bff-api
 	$(NS) rollout status deploy/orders-api

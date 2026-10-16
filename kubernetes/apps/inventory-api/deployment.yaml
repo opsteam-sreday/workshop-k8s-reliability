@@ -24,7 +24,7 @@ spec:
       priorityClassName: critical-services
       terminationGracePeriodSeconds: 30
       nodeSelector: {workload: apps}
-      # No máximo 1 réplica de diferença entre os nós apps: perder um nó não leva todas as réplicas (LAB 06, parte E).
+      # No máximo 1 réplica de diferença entre os nós apps: perder um nó não leva todas as réplicas (LAB 05, parte E).
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname

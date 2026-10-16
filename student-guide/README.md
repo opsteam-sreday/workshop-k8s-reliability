@@ -189,8 +189,9 @@ scripts/reset.sh
 2. [LAB 02 — CPU Stress & Autoscaling](../labs/lab-02/README.md): HPA, Pods Pending e Cluster Autoscaler.
 3. [LAB 03 — QoS & PriorityClass](../labs/lab-03/README.md): throttling, OOMKilled, eviction e preemption.
 4. [LAB 04 — Circuit Breaker](../labs/lab-04/README.md): timeout, retry, OPEN, HALF_OPEN e CLOSED.
-5. [LAB 05 — ClickStack Alerting](../labs/lab-05/README.md): quatro alertas e o anti-pattern de contagem de logs.
-6. [LAB 06 — Probes, Graceful Shutdown & Topology Spread](../labs/lab-06/README.md): readiness × liveness × startup, rollout sem erro, deploy quebrado e drain de nó.
+5. [LAB 05 — Probes, Graceful Shutdown & Topology Spread](../labs/lab-05/README.md): readiness × liveness × startup, rollout sem erro, deploy quebrado e drain de nó.
+
+Extra (fora da agenda): [LAB X1 — ClickStack Alerting](../labs/.extras/lab-x1/README.md): quatro alertas e o anti-pattern de contagem de logs.
 
 Execute `scripts/reset.sh` ao terminar cada laboratório.
 

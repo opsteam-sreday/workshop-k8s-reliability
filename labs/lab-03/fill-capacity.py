@@ -26,7 +26,7 @@ def cpu_m(value: str) -> int:
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--slack", type=int, default=100, help="millicores livres deixados em cada nó")
-parser.add_argument("--node", help="ocupa só este nó apps (LAB 06: topology spread); padrão: todos")
+parser.add_argument("--node", help="ocupa só este nó apps (LAB 05: topology spread); padrão: todos")
 args = parser.parse_args()
 
 nodes = json.loads(kubectl("get", "nodes", "-l", "workload=apps", "-o", "json"))["items"]

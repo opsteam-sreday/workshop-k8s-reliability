@@ -224,7 +224,7 @@ labs/lab-04/watch-cb.sh        # estado do Circuit Breaker por réplica da Order
    `Preempted` — *"Preempted by pod … on node …"*. O Pod da Orders é agendado nesse nó (`nominatedNodeName`).
 3. A Inventory é recriada pelo ReplicaSet e fica `Pending`: não há espaço e ela **não pode** preemptar ninguém
    (todos os demais são `critical-services` ou `system-*`).
-4. O outro novo Pod da Orders continua `Pending`. O topology spread da Orders (`maxSkew: 1` por nó, LAB 06) exige
+4. O outro novo Pod da Orders continua `Pending`. O topology spread da Orders (`maxSkew: 1` por nó, LAB 05) exige
    que ele vá para o **outro** nó, que está cheio de ballasts `critical-services` (sem vítimas):
    *"0/3 nodes are available: 1 Insufficient cpu, 1 node(s) didn't match pod topology spread constraints … preemption:
    … Preemption is not helpful for scheduling"*.

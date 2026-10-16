@@ -7,7 +7,7 @@ info "Removendo artefatos de laboratório"
 kubectl -n loadtest delete jobs -l app.kubernetes.io/name=k6 --ignore-not-found --wait=false >/dev/null
 kubectl -n loadtest delete pod noisy-neighbor --ignore-not-found >/dev/null
 kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast --ignore-not-found >/dev/null
-kubectl uncordon -l workload=apps >/dev/null   # LAB 06 (parte E) drena um nó apps
+kubectl uncordon -l workload=apps >/dev/null   # LAB 05 (parte E) drena um nó apps
 kubectl -n ecommerce get pods -o name | grep "pod/iam-probe-" | xargs -r kubectl -n ecommerce delete --ignore-not-found >/dev/null || true
 
 info "Restaurando manifests base (perfil Burstable, Inventory com critical-services, HPA, ORDERS_CPU_WORK_MS=0)"

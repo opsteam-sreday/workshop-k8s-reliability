@@ -44,7 +44,7 @@ scripts k6 e cinco laboratórios. O status de validação de cada item está em
 | Kubernetes | `kubernetes/` | base (Deployments, Services, NetworkPolicies, ValidatingAdmissionPolicy), QoS, PriorityClass, HPA |
 | Observabilidade | `observability/` | ClickStack (Helm), OTel Collectors, alertas + webhook, consultas HyperDX/SQL |
 | Carga | `load-tests/` | 5 scripts k6 (inclui 20 requisições concorrentes com a mesma chave) |
-| Laboratórios | `labs/lab-01..06` | 13 seções cada + scripts de apoio/verificação |
+| Laboratórios | `labs/lab-01..05` (+ extra `labs/.extras/lab-x1`) | 13 seções cada + scripts de apoio/verificação |
 
 ## Estrutura do repositório
 
@@ -61,7 +61,7 @@ eks-reliability-workshop/
 ├── observability/    clickstack/ (values, bootstrap) · otel/ (gateway, agent) · alerts/ · queries/
 ├── load-tests/       create-orders.js · get-orders.js · stress-orders.js · inventory-errors.js
 │                     idempotency-concurrency.js · lib/common.js
-├── labs/             lab-01 … lab-06 (README + scripts)
+├── labs/             lab-01 … lab-05 (README + scripts) · .extras/lab-x1 (alerting, fora da agenda)
 ├── scripts/          setup.sh · deploy.sh · validate.sh · validate-iam.sh · reset.sh · teardown.sh
 │                     fault.sh · k6.sh · test.sh · local/stack.py · lib/
 ├── tests/integration (processos reais + DynamoDB Local)
@@ -165,8 +165,8 @@ curl -s -X POST $BFF/orders -H "Idempotency-Key: $(uuidgen | tr A-Z a-z)" -H 'Co
 | [LAB 02](labs/lab-02/README.md) | CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | `kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS=40` + `scripts/k6.sh stress-orders.js RATE=60 DURATION=6m` | `labs/lab-02/verify.sh` |
 | [LAB 03](labs/lab-03/README.md) | QoS & PriorityClass (throttling, OOMKilled, preemption) | `labs/lab-03/qos.sh …`, `labs/lab-03/fill-capacity.py` | ver README |
 | [LAB 04](labs/lab-04/README.md) | Circuit Breaker (CLOSED → OPEN → HALF_OPEN → CLOSED) | `scripts/fault.sh inventory latency 800 RESERVATIONS` + `labs/lab-04/watch-cb.sh` | ver README |
-| [LAB 05](labs/lab-05/README.md) | ClickStack Alerting (4 alertas, anti-pattern) | `scripts/fault.sh inventory http-503 …` + `scripts/k6.sh inventory-errors.js` | `labs/lab-05/compare-counts.sh` |
-| [LAB 06](labs/lab-06/README.md) | Probes, Graceful Shutdown & Topology Spread (readiness × liveness × startup, rollout, deploy quebrado, drain de nó) | `scripts/fault.sh orders not-ready\|freeze <s> <pod>` + `scripts/k6.sh create-orders.js` | `labs/lab-06/watch-pod.sh`, `labs/lab-06/count-responses.sh` |
+| [LAB 05](labs/lab-05/README.md) | Probes, Graceful Shutdown & Topology Spread (readiness × liveness × startup, rollout, deploy quebrado, drain de nó) | `scripts/fault.sh orders not-ready\|freeze <s> <pod>` + `scripts/k6.sh create-orders.js` | `labs/lab-05/watch-pod.sh`, `labs/lab-05/count-responses.sh` |
+| *Extra:* [LAB X1](labs/.extras/lab-x1/README.md) | ClickStack Alerting (4 alertas, anti-pattern) — fora da agenda | `scripts/fault.sh inventory http-503 …` + `scripts/k6.sh inventory-errors.js` | `labs/.extras/lab-x1/compare-counts.sh` |
 
 **Turma com um ambiente por aluno** (mesma conta, isolamento por cluster/tabela/role + login via IAM Identity Center):
 `make fleet-quotas` · `make identity-center` · `make fleet-up` · `make fleet-down` — passo a passo no

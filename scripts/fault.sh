@@ -16,7 +16,7 @@
 #   fault.sh orders crash-after-reservation | inventory-timeout <ms> | cb | cb-reset
 # BFF API:
 #   fault.sh bff timeout <ms>
-# Probes (LAB 06; <pod> obrigatório para não atingir todas as réplicas):
+# Probes (LAB 05; <pod> obrigatório para não atingir todas as réplicas):
 #   fault.sh <inventory|orders|bff> not-ready <pod>       readiness 503, liveness 200 (sai do Service, não reinicia)
 #   fault.sh <inventory|orders|bff> ready [pod]           desfaz o not-ready (sem pod: todos)
 #   fault.sh <inventory|orders|bff> freeze <s> <pod>      trava o event loop por <s> s (1..300): probes sem resposta

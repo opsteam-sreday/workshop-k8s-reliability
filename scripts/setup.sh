@@ -155,7 +155,7 @@ run "Implantar o receptor de webhooks" "O HyperDX enviará os alertas para http:
 run "Aguardar o receptor" "Readiness em /healthz." \
   kubectl -n observability rollout status deploy/alert-webhook --timeout=3m
 run "Criar webhook, saved searches e os 4 alertas no HyperDX" \
-  "Via External API v2. Cada alerta conta logs ERROR por serviço/rota (≥5 em 5 min) — um ANTI-PATTERN INTENCIONAL que o LAB 05 desmonta: uma requisição pode gerar vários logs e outra pode falhar sem log nenhum." \
+  "Via External API v2. Cada alerta conta logs ERROR por serviço/rota (≥5 em 5 min) — um ANTI-PATTERN INTENCIONAL que o LAB X1 desmonta: uma requisição pode gerar vários logs e outra pode falhar sem log nenhum." \
   python3 "$REPO_ROOT/observability/alerts/create_alerts.py" --app-url "http://localhost:${HDX_APP_PORT}" \
     --api-url "http://localhost:${HDX_API_PORT}" --creds "$STATE_DIR/hyperdx-credentials.json" \
     --webhook-url "http://alert-webhook.observability.svc.cluster.local:8080/alerts"

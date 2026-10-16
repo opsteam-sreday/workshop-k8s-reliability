@@ -77,7 +77,7 @@ Provocar latência artificial e respostas HTTP 503 na Inventory API. Examinar ti
 
 **Duração sugerida:** 60 minutos.
 
-## LAB 05 — ClickStack Observability & Alerting
+## LAB X1 — ClickStack Observability & Alerting
 
 **Tema:** Métricas, logs, traces e alertas.
 
@@ -97,7 +97,7 @@ Investigar requisições ponta a ponta usando OpenTelemetry e HyperDX. Examinar 
 | LAB 02 — Autoscaling | 75 min |
 | LAB 03 — QoS e prioridades | 60 min |
 | LAB 04 — Circuit Breaker | 60 min |
-| LAB 05 — ClickStack e alertas | 75 min |
+| LAB X1 — ClickStack e alertas | 75 min |
 | **Total hands-on** | **360 min (6 horas)** |
 
 Com abertura, intervalo e encerramento, planejar **aproximadamente 7 horas**. Recomenda-se disponibilizar a infraestrutura pré-provisionada para manter a agenda.

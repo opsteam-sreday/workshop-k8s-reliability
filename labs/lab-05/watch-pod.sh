@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Painel do LAB 06: a cada 1 s, READY e RESTARTS de UM Pod e se ele recebe tráfego (EndpointSlice do Service).
+# Painel do LAB 05: a cada 1 s, READY e RESTARTS de UM Pod e se ele recebe tráfego (EndpointSlice do Service).
 # Só imprime quando algo muda, com o segundo em que mudou.
-# Uso: labs/lab-06/watch-pod.sh <pod> [service=orders-api]
+# Uso: labs/lab-05/watch-pod.sh <pod> [service=orders-api]
 source "$(dirname "$0")/../../scripts/lib/common.sh"
 require kubectl
 pod="${1:?uso: watch-pod.sh <pod> [service]}"; svc="${2:-orders-api}"
