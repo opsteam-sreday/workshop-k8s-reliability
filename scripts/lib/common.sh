@@ -76,6 +76,26 @@ account_id() {
   echo "$AWS_ACCOUNT_ID"
 }
 
+# 0 = o cluster existe; 1 = não existe (ResourceNotFoundException). Qualquer outro erro (sessão SSO expirada,
+# rede) ABORTA: tratá-lo como "não existe" faria o teardown pular o cluster e o setup tentar recriá-lo.
+cluster_exists() {
+  local err
+  if err="$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --query cluster.status --output text 2>&1)"; then
+    return 0
+  fi
+  [[ "$err" == *ResourceNotFoundException* ]] && return 1
+  fail "Não foi possível verificar o cluster ${CLUSTER_NAME}: ${err}"
+}
+
+# aws CLI e eksctl guardam credenciais em caches diferentes: com a sessão SSO expirada, o aws CLI pode seguir
+# funcionando (credencial temporária em cache) enquanto o eksctl falha. Confere os dois antes de começar.
+require_aws_session() {
+  aws sts get-caller-identity >/dev/null 2>&1 || fail "AWS CLI sem credenciais válidas (sessão SSO expirada? aws sso login)"
+  local err
+  err="$(eksctl get cluster --region "$AWS_REGION" -o json 2>&1 >/dev/null)" \
+    || fail "eksctl sem credenciais válidas (sessão SSO expirada? aws sso login): ${err}"
+}
+
 ecr_registry() { echo "$(account_id).dkr.ecr.${AWS_REGION}.amazonaws.com"; }
 
 # Substitui ${VAR} pelo valor da variável de ambiente (sem depender de envsubst).
