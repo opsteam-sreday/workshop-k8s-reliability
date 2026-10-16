@@ -1,0 +1,7 @@
+# LAB 04 F4 — a BFF tolera o taint maintenance=lab04:NoExecute por 60 s: continua no nó A por 60 s depois do taint e
+# então é despejada. Sem tolerationSeconds ficaria para sempre; sem a toleration sairia na hora (como a Orders).
+spec:
+  template:
+    spec:
+      tolerations:
+        - {key: maintenance, operator: Equal, value: lab04, effect: NoExecute, tolerationSeconds: 60}

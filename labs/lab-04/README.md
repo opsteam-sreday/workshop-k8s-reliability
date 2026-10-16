@@ -1,8 +1,8 @@
-# LAB 04 — Affinity, Anti-affinity & Topology Spread
+# LAB 04 — Affinity, Anti-affinity, Topology Spread & Taints
 
 > **Break it → Observe it → Understand it → Fix it → Validate it**
 >
-> Duração estimada: 50 min · Partes A–D (afinidades) ≈ 30 min · Parte E (topology spread) ≈ 15 min · Parte F ≈ 5 min
+> Duração estimada: 65 min · Partes A–D (afinidades) ≈ 30 min · Parte E (topology spread) ≈ 15 min · Parte F (taints) ≈ 15 min · Parte G ≈ 5 min
 
 ---
 
@@ -18,8 +18,9 @@ O scheduler decide **onde** cada Pod roda. As APIs já declaram duas regras de p
 
 Neste lab você acrescenta, **uma de cada vez**, as outras ferramentas de posicionamento — `nodeAffinity`,
 `podAntiAffinity` e `podAffinity`, nas versões *required* (regra) e *preferred* (preferência) — e observa quando cada
-uma **bloqueia** o agendamento, quando só **pontua** e como elas se combinam com o topology spread. Os patches ficam
-em `kubernetes/labs/scheduling/`.
+uma **bloqueia** o agendamento, quando só **pontua** e como elas se combinam com o topology spread. No fim, inverte o
+ponto de vista: com **taints** é o **nó** que recusa Pods, e as **tolerations** dizem quais Pods aceitam aquele nó. Os
+patches ficam em `kubernetes/labs/scheduling/`.
 
 O scheduler trabalha em duas etapas, e é isso que explica todo o lab:
 
@@ -58,6 +59,8 @@ Regra prática: *required* e `DoNotSchedule` são **filtros** (podem deixar o Po
    não ter solução e deixa réplicas `Pending`.
 5. Com `maxSkew: 1` rígido, uma réplica fica `Pending` em vez de ir para um nó que já tem uma a mais — **mesmo que esse
    nó tenha CPU livre**. E o spread só vale **no agendamento**: depois de um drain, nada rebalanceia sozinho.
+6. Um taint `NoSchedule` **não move** os Pods que já rodam no nó, só barra os novos. Uma toleration **permite** o nó, mas
+   não **atrai** o Pod para ele. Um taint `NoExecute` **despeja** na hora quem não o tolera — **sem consultar o PDB**.
 
 ## 3. Pré-requisitos
 
@@ -76,8 +79,14 @@ done
 kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler    # READY 1/1
 ```
 
+```bash
+kubectl get nodes -o 'custom-columns=NODE:.metadata.name,WORKLOAD:.metadata.labels.workload,TAINTS:.spec.taints'
+```
+
 Esperado: 2 nós `apps` (de preferência em **zonas diferentes** — a parte A3 depende disso), BFF e Orders com
 **1 réplica em cada nó**, Inventory com 1 réplica, `affinity=` vazio nos três Deployments, Cluster Autoscaler ligado.
+Na lista de taints, só o nó `observability` tem um (`workload=observability:NoSchedule`); os nós `apps` aparecem com
+`<none>`.
 
 Guarde os nomes que o lab usa. O **nó A** é um nó `apps` **sem** a Inventory (réplica única: drená-la derrubaria a
 dependência — veja o challenge 5):
@@ -113,20 +122,28 @@ export T0=$(date -u +%FT%TZ)
 labs/lab-02/count-responses.sh "$T0"
 ```
 
-Entre as partes, **limpe** a afinidade aplicada (o patch `clear-affinity` apaga o campo e é idempotente):
+Entre as partes, **limpe** a afinidade e as tolerations aplicadas (os patches `clear-affinity` e `clear-tolerations`
+apagam o campo e são idempotentes). Uma regra esquecida contamina a parte seguinte — por exemplo, o anti-affinity da
+parte C mudaria a distribuição medida na E. Por isso o bloco **🔁 Antes da parte …** aparece no fim de **cada** parte,
+com os comandos completos:
 
 ```bash
-kubectl -n ecommerce patch deploy bff-api    --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
-kubectl -n ecommerce patch deploy orders-api --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+for d in bff-api orders-api; do
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+done
 kubectl -n ecommerce rollout status deploy/bff-api && kubectl -n ecommerce rollout status deploy/orders-api
+kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhum
 ```
+
+Um patch que não muda nada não dispara rollout; se a parte deixou um rollout travado (A1, B1, D2), a limpeza o destrava.
 
 Cada patch muda o template do Pod e dispara um **rollout** (`maxSurge: 1`, `maxUnavailable: 0`): um Pod novo sobe
 **antes** de um antigo sair. Por isso um Pod novo `Pending` aparece como **rollout travado**, não como queda do serviço.
 
 ## 6. Falha provocada
 
-Execute as partes **na ordem** (A → B → C → D → E), no terminal de comandos.
+Execute as partes **na ordem** (A → B → C → D → E → F), no terminal de comandos.
 
 ### Parte A — `nodeSelector` × `nodeAffinity` (BFF)
 
@@ -196,8 +213,6 @@ flowchart LR
 | A2 — *preferred* inalcançável | `bff-zone-preferred-missing` | rollout conclui; 1 BFF por nó (o spread decide) | `rollout status` ok; `get pods -o wide` |
 | A3 — *required* zona A | `bff-zone-required` com `$ZONE_A` | as 2 BFF no nó A; o spread não reclama (só 1 domínio conta) | `get pods -o wide`: mesmo `NODE` nas duas |
 
-Ao terminar a parte A, limpe a BFF (`clear-affinity`, seção 5).
-
 > **💡 O que você deveria ter notado (A)**
 >
 > - **A1:** a BFF nova ficou `Pending` com `2 node(s) didn't match Pod's node affinity/selector`, o rollout travou
@@ -207,6 +222,17 @@ Ao terminar a parte A, limpe a BFF (`clear-affinity`, seção 5).
 >   conta como domínio): 0 erros, mas agora um nó só carrega a BFF inteira.
 >
 > **Lição:** *required* restringe (e pode deixar Pods `Pending`); *preferred* só pesa no score e nunca bloqueia.
+
+**🔁 Antes da parte B: limpe a BFF e a Orders** (sempre, mesmo que a parte tenha terminado limpa — é idempotente):
+
+```bash
+for d in bff-api orders-api; do
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+done
+kubectl -n ecommerce rollout status deploy/bff-api && kubectl -n ecommerce rollout status deploy/orders-api
+kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhum
+```
 
 ### Parte B — `podAntiAffinity` *required* (Orders)
 
@@ -298,11 +324,20 @@ anti-affinity é o mais restritivo — "no máximo 1 por nó" — enquanto o spr
 >
 > **Lição:** anti-affinity *required* limita a escala ao número de nós, e sem `matchLabelKeys` trava o próprio rollout.
 
+**🔁 Antes da parte C: limpe a BFF e a Orders** (sempre, mesmo que a parte tenha terminado limpa — é idempotente):
+
+```bash
+for d in bff-api orders-api; do
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+done
+kubectl -n ecommerce rollout status deploy/bff-api && kubectl -n ecommerce rollout status deploy/orders-api
+kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhum
+```
+
 ### Parte C — `podAntiAffinity` *preferred* (Orders)
 
 ```bash
-kubectl -n ecommerce patch deploy orders-api --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
-kubectl -n ecommerce rollout status deploy/orders-api
 kubectl -n ecommerce patch deploy orders-api --patch-file kubernetes/labs/scheduling/orders-anti-preferred.patch.yaml
 kubectl -n ecommerce rollout status deploy/orders-api
 
@@ -336,6 +371,17 @@ flowchart LR
 >   0 erros (454 × `201`).
 >
 > **Lição:** *preferred* espalha quando dá e empilha quando não dá — disponibilidade sem bloquear a escala.
+
+**🔁 Antes da parte D: limpe a BFF e a Orders** (sempre, mesmo que a parte tenha terminado limpa — é idempotente):
+
+```bash
+for d in bff-api orders-api; do
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+done
+kubectl -n ecommerce rollout status deploy/bff-api && kubectl -n ecommerce rollout status deploy/orders-api
+kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhum
+```
 
 ### Parte D — `podAffinity` (BFF perto da Inventory)
 
@@ -382,8 +428,6 @@ flowchart LR
 | D1 — *preferred* | `bff-affinity-inventory-preferred` | rollout conclui; BFF continua 1 por nó (o spread filtra, a preferência só pontua) | `get pods -o wide` |
 | D2 — *required* | `bff-affinity-inventory-required` | 1ª BFF nova no nó da Inventory; 2ª `Pending`; rollout travado com 1 nova + 1 antiga atendendo | terminal 2: `didn't match pod affinity rules` e `didn't match pod topology spread constraints`; sem 5xx |
 
-Ao terminar, limpe a BFF (`clear-affinity`, seção 5).
-
 > **💡 O que você deveria ter notado (D)**
 >
 > - **D1:** a preferência por ficar perto da Inventory perdeu para o spread: a BFF continuou 1 por nó (uma delas no
@@ -393,6 +437,17 @@ Ao terminar, limpe a BFF (`clear-affinity`, seção 5).
 >   Rollout travado com 1 nova + 1 antiga atendendo, 0 erros (556 × `201`).
 >
 > **Lição:** regras *required* se somam; combinadas, podem deixar Pods sem lugar nenhum.
+
+**🔁 Antes da parte E: limpe a BFF e a Orders** (sempre, mesmo que a parte tenha terminado limpa — é idempotente):
+
+```bash
+for d in bff-api orders-api; do
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+done
+kubectl -n ecommerce rollout status deploy/bff-api && kubectl -n ecommerce rollout status deploy/orders-api
+kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhum
+```
 
 ### Parte E — topology spread (falha de nó)
 
@@ -495,9 +550,183 @@ kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscal
 >
 > **Lição:** topology spread vale **no agendamento**: impede empilhar, mas não rebalanceia sozinho.
 
-### Parte F — comparação
+**🔁 Antes da parte F: limpe a BFF e a Orders** (sempre, mesmo que a parte tenha terminado limpa — é idempotente):
 
-Sem comandos: preencha mentalmente (ou em grupo) a tabela da seção 8 com o que você viu nas partes A–E.
+```bash
+for d in bff-api orders-api; do
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+done
+kubectl -n ecommerce rollout status deploy/bff-api && kubectl -n ecommerce rollout status deploy/orders-api
+kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhum
+```
+
+### Parte F — taints & tolerations (o nó escolhe)
+
+Até aqui, quem escolhia era o **Pod** (`nodeSelector`, affinity, spread). Com um **taint**, quem recusa é o **nó**: um
+taint `chave=valor:efeito` afasta todo Pod que não tenha uma **toleration** correspondente. O efeito decide a força:
+
+| Efeito | Pods novos sem toleration | Pods que já rodam no nó sem toleration |
+|---|---|---|
+| `PreferNoSchedule` | evitados (só pontuação) | ficam |
+| `NoSchedule` | **filtrados** (`had untolerated taint(s)`) | ficam |
+| `NoExecute` | **filtrados** | **despejados** (na hora, ou depois de `tolerationSeconds`) |
+
+Mantenha o k6 rodando (terminal 3): ele roda no nó `observability` e não é afetado pelos taints dos nós `apps`. Use o
+`NODE_A` (sem a Inventory) e o `NODE_B` da seção 4. O Cluster Autoscaler pode ficar **ligado**: tudo cabe no nó B.
+
+**F1 — os taints que já existem.** O nó `observability` é um **nó dedicado**: o taint afasta as APIs e o `nodeSelector`
+das cargas de observabilidade as leva para lá. As duas metades são necessárias:
+
+```bash
+OBS_NODE=$(kubectl get node -l workload=observability -o name | sed 's#node/##')
+kubectl get node $OBS_NODE -o jsonpath='{.spec.taints}{"\n"}'
+kubectl get pods -A -o wide --field-selector spec.nodeName=$OBS_NODE           # ClickStack, OTel gateway, k6, DaemonSets
+kubectl -n loadtest get pod -l app.kubernetes.io/name=k6 -o jsonpath='{.items[0].spec.tolerations}{"\n"}'
+kubectl -n loadtest get pod -l app.kubernetes.io/name=k6 -o jsonpath='{.items[0].spec.nodeSelector}{"\n"}'
+
+# As APIs não declaram tolerations, mas todo Pod recebe duas na criação (admission DefaultTolerationSeconds):
+kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api \
+  -o jsonpath='{range .items[0].spec.tolerations[*]}{.key}{"  "}{.effect}{"  "}{.tolerationSeconds}{"\n"}{end}'
+```
+
+Esperado: `node.kubernetes.io/not-ready  NoExecute  300` e `node.kubernetes.io/unreachable  NoExecute  300`. Quando um
+nó para de responder, o controlador coloca nele esses taints `NoExecute`, e os Pods ficam **5 minutos** presos lá antes
+de serem recriados em outro nó (challenge 8).
+
+**F2 — taint `NoSchedule` no nó A.** Reserve o nó A para "outra equipe":
+
+```bash
+export T0=$(date -u +%FT%TZ)
+kubectl taint nodes $NODE_A dedicated=lab04:NoSchedule
+sleep 20; kubectl -n ecommerce get pods -o wide --sort-by=.spec.nodeName     # nada mudou
+
+kubectl -n ecommerce rollout restart deploy/orders-api
+kubectl -n ecommerce rollout status deploy/orders-api                        # conclui
+kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api -o wide   # as 2 no nó B
+labs/lab-02/count-responses.sh "$T0"
+```
+
+```mermaid
+flowchart LR
+    subgraph A["nó A — taint dedicated=lab04:NoSchedule"]
+        A1["bff (antiga)<br/>continua rodando"]
+    end
+    subgraph B["nó B"]
+        B1["bff"]
+        B2["orders nova #1"]
+        B3["orders nova #2"]
+    end
+    R["orders (rollout restart)"] -. "had untolerated taint" .-> A
+    R --> B
+    N["nodeTaintsPolicy: Honor<br/>nó A fora da conta do spread → 1 domínio, skew 0"] --> B
+```
+
+O taint não tirou a BFF do nó A: `NoSchedule` só vale para Pods **novos**. O rollout da Orders não travou porque o spread
+usa `nodeTaintsPolicy: Honor`: um nó com taint não tolerado **não conta** como domínio (é o mesmo motivo de o drain da E3
+funcionar — `cordon` é o taint `node.kubernetes.io/unschedulable:NoSchedule`).
+
+**F3 — toleration na Orders.** A Orders passa a aceitar o nó A:
+
+```bash
+kubectl -n ecommerce patch deploy orders-api --patch-file kubernetes/labs/scheduling/orders-tolerate-dedicated.patch.yaml
+kubectl -n ecommerce rollout status deploy/orders-api
+kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api -o wide   # 1 × 1 de novo
+kubectl -n ecommerce get pods -l app.kubernetes.io/name=bff-api -o wide      # a BFF segue onde estava
+```
+
+A Orders voltou a **1 × 1**: com a toleration o nó A volta a contar no spread, e o spread decide. Ela não foi
+"atraída" para o nó A — só deixou de ser recusada. Para dedicar um nó a uma carga, é preciso **taint + toleration** (as
+outras ficam fora) **e** `nodeSelector`/`nodeAffinity` (a carga fica dentro), como no nó `observability` (F1).
+
+**F4 — taint `NoExecute`: despejo sem PDB.** Prepare: tire o taint da F2 e a toleration da Orders, dê à BFF uma
+toleration de 60 s para o taint de manutenção e trave a PDB da Orders em `maxUnavailable: 0` (como no LAB 03, parte D):
+
+```bash
+kubectl taint nodes $NODE_A dedicated-
+kubectl -n ecommerce patch deploy orders-api --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+kubectl -n ecommerce patch deploy bff-api --patch-file kubernetes/labs/scheduling/bff-tolerate-maintenance.patch.yaml
+kubectl -n ecommerce rollout status deploy/orders-api && kubectl -n ecommerce rollout status deploy/bff-api
+kubectl -n ecommerce patch pdb orders-api --type merge --patch-file kubernetes/labs/rollout/orders-pdb-zero.patch.yaml
+kubectl -n ecommerce get pdb orders-api                                       # ALLOWED DISRUPTIONS 0
+kubectl -n ecommerce get pods -l 'app.kubernetes.io/name in (bff-api,orders-api)' -o wide --sort-by=.spec.nodeName
+```
+
+Confira que BFF e Orders têm **1 réplica em cada nó** antes de seguir. Um `kubectl drain $NODE_A` agora ficaria
+retentando a Orders para sempre (PDB). O taint `NoExecute` não passa pela API de eviction:
+
+```bash
+export T0=$(date -u +%FT%TZ)
+kubectl taint nodes $NODE_A maintenance=lab04:NoExecute
+kubectl -n ecommerce get events -w --field-selector reason=TaintManagerEviction   # Ctrl+C após ~70 s
+kubectl -n ecommerce get pods -l 'app.kubernetes.io/name in (bff-api,orders-api)' -o wide --sort-by=.spec.nodeName
+kubectl -n ecommerce get pdb orders-api
+labs/lab-02/count-responses.sh "$T0"
+```
+
+```mermaid
+sequenceDiagram
+    participant T as kubectl taint (NoExecute)
+    participant C as taint eviction controller
+    participant O as orders (nó A)
+    participant F as bff (nó A, tolera 60 s)
+    T->>C: nó A: maintenance=lab04:NoExecute
+    C->>O: sem toleration → delete na hora (a PDB não é consultada)
+    Note over O: ReplicaSet recria no nó B
+    C->>F: toleration com tolerationSeconds 60 → agenda o delete
+    Note over F: 60 s depois
+    C->>F: delete
+    Note over F: ReplicaSet recria no nó B
+```
+
+> **Atenção:** o `NoExecute` despeja **tudo** do nó A que não tem toleration — inclusive Pods do `kube-system` como
+> CoreDNS, metrics-server e o Cluster Autoscaler — e sem respeitar nenhuma PDB. DaemonSets (`aws-node`, `kube-proxy`,
+> OTel agent com `operator: Exists`) toleram tudo e ficam. Por isso manutenção de nó se faz com `drain`, não com taint.
+
+Restaure o nó A e a PDB. Como na E3, nada volta sozinho para o nó A; o `rollout restart` redistribui:
+
+```bash
+kubectl taint nodes $NODE_A maintenance-
+kubectl -n ecommerce patch pdb orders-api --type merge --patch-file kubernetes/labs/rollout/orders-pdb-restore.patch.yaml
+kubectl -n ecommerce patch deploy bff-api --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+kubectl -n ecommerce rollout restart deploy/orders-api
+kubectl -n ecommerce rollout status deploy/orders-api && kubectl -n ecommerce rollout status deploy/bff-api
+kubectl get nodes -l workload=apps -o 'custom-columns=NODE:.metadata.name,TAINTS:.spec.taints'   # <none> nos dois
+```
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| F1 — taints existentes | inspeção | nó `observability` com `workload=observability:NoSchedule`; só ClickStack/OTel/k6 + DaemonSets nele; APIs com `not-ready`/`unreachable` 300 s | comandos da F1 |
+| F2 — `NoSchedule` | taint no nó A + `rollout restart` da Orders | BFF antiga **continua** no nó A; as 2 Orders novas no nó B; rollout conclui | terminal 1; `rollout status` |
+| F3 — toleration | `orders-tolerate-dedicated` | Orders 1 × 1 de novo (o spread decide; a toleration não atrai) | `get pods -o wide` |
+| F4 — `NoExecute` | taint `maintenance` no nó A com PDB `maxUnavailable: 0` | Orders do nó A despejada **na hora**, apesar da PDB; BFF do nó A só depois de **60 s**; tudo no nó B | eventos `TaintManagerEviction`; terminal 1; `count-responses.sh` |
+
+> **💡 O que você deveria ter notado (F)**
+>
+> - **F1:** o nó dedicado precisa de duas peças: taint (afasta os outros) e `nodeSelector` (puxa os seus). E toda API
+>   já tem tolerations de 300 s que você nunca escreveu.
+> - **F2:** o taint `NoSchedule` não moveu nenhum Pod; só o restart levou a Orders para o nó B, sem travar o rollout
+>   (`nodeTaintsPolicy: Honor`).
+> - **F3:** com a toleration a Orders voltou a 1 × 1 — o nó A deixou de recusá-la, mas não passou a atraí-la.
+> - **F4:** a Orders saiu do nó A em segundos com `ALLOWED DISRUPTIONS 0`; a BFF esperou os 60 s da toleration.
+>
+> **Lição:** taint é a regra do **nó**; toleration é **permissão**, não preferência. `NoExecute` despeja sem consultar
+> a PDB — ele é o mecanismo de falha de nó (`not-ready`/`unreachable`), não de manutenção.
+
+**🔁 Antes da parte G: limpe a BFF e a Orders** (sempre, mesmo que a parte tenha terminado limpa — é idempotente):
+
+```bash
+for d in bff-api orders-api; do
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+done
+kubectl -n ecommerce rollout status deploy/bff-api && kubectl -n ecommerce rollout status deploy/orders-api
+kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhum
+```
+
+### Parte G — comparação
+
+Sem comandos: preencha mentalmente (ou em grupo) a tabela da seção 8 com o que você viu nas partes A–F.
 
 ## 7. Observações
 
@@ -542,6 +771,21 @@ Valores medidos no cluster `rw-0001` (10 pedidos/s) durante a validação do lab
 | E3, 60 s após `uncordon` | **tudo continua no nó B**: o nó A voltou, mas nada se move |
 | E3, `rollout restart` | 1 réplica em cada nó de novo; BFF: **282 × `201`, 0 erros** |
 
+### F — taints & tolerations
+
+> **Ainda não validado em cluster.** A tabela descreve o comportamento **esperado**; substitua pelos valores medidos
+> (contagens do `count-responses.sh`, tempos dos eventos) na próxima validação.
+
+| Passo | O que deve aparecer |
+|---|---|
+| F1 | nó `observability`: `[{"effect":"NoSchedule","key":"workload","value":"observability"}]`; APIs com `not-ready`/`unreachable` `NoExecute` 300 |
+| F2, 20 s após o taint | nenhum Pod se move; o nó A segue com a BFF e a Orders antigas |
+| F2, `rollout restart` | rollout conclui; as 2 Orders no nó B; nenhum `FailedScheduling`; BFF sem 5xx |
+| F3 | Orders 1 × 1 de novo; a BFF não muda |
+| F4, na hora | evento `TaintManagerEviction` `Marking for deletion Pod ecommerce/orders-api-…`, com `ALLOWED DISRUPTIONS 0` na PDB |
+| F4, ~60 s depois | `Marking for deletion Pod ecommerce/bff-api-…`; BFF e Orders inteiras no nó B |
+| F4, BFF | sem 5xx esperados: o delete do despejo respeita o `terminationGracePeriodSeconds` e o shutdown gracioso do LAB 02 |
+
 ## 8. Explicação técnica
 
 - **Filtro × pontuação.** *required* e `DoNotSchedule` eliminam nós; se nenhum sobra, o Pod fica `Pending` com um
@@ -583,10 +827,26 @@ Valores medidos no cluster `rw-0001` (10 pedidos/s) durante a validação do lab
   **caberia** nele. Com o CA ligado, a réplica pendente da E2 (spread) e a da B3 (anti-affinity) fariam o CA criar um
   nó novo — por isso ele fica desligado nesses passos. Na A1 (zona inexistente) e na D2 (precisa da Inventory, que
   não estaria no nó novo), o CA não ajuda: o Pod continua `Pending` mesmo com ele ligado.
+- **Taints & tolerations (F).** Taint é a regra do nó; toleration é a exceção no Pod — ela só **libera** o nó, não
+  pontua a favor dele. Para um nó dedicado: taint (os outros ficam fora) + toleration **e** `nodeSelector`/affinity (a
+  carga fica dentro). `NoSchedule` é filtro no agendamento (`had untolerated taint(s)`); `NoExecute` também age
+  **durante a execução**: o *taint eviction controller* apaga os Pods sem toleration na hora, e os que têm
+  `tolerationSeconds` depois desse prazo. Esse delete **não passa pela API de eviction**, então nenhuma PDB o impede
+  (F4) — é por isso que manutenção se faz com `drain` (que usa eviction e respeita PDB) e não com um taint `NoExecute`.
+- **As tolerations que ninguém escreveu.** A admission `DefaultTolerationSeconds` adiciona a todo Pod
+  `node.kubernetes.io/not-ready` e `node.kubernetes.io/unreachable` (`NoExecute`, 300 s). Quando um nó some, o
+  controlador de nós aplica esses taints: os Pods saem dos Endpoints em segundos (ficam `Ready=False`), mas só são
+  **recriados** em outro nó depois de 5 min. Até lá o serviço roda com réplicas a menos. Reduzir para 30–60 s acelera
+  a recuperação; o custo é recriar Pods à toa num blip de rede. DaemonSets toleram esses taints sem prazo.
+- **Taints e o scheduler.** `cordon` é o taint `node.kubernetes.io/unschedulable:NoSchedule`; nós sob pressão ganham
+  `node.kubernetes.io/memory-pressure`/`disk-pressure`. Com `nodeTaintsPolicy: Honor`, nós com taint não tolerado
+  saem da conta do spread (F2); com o padrão `Ignore`, contariam como domínios vazios e travariam o rollout
+  (challenge 7). Para o Cluster Autoscaler, um node group com taint só ajuda Pods que o toleram (as tags
+  `k8s.io/cluster-autoscaler/node-template/taint/...` informam o taint de nós que ainda não existem).
 - **Spread não protege réplica única.** A Inventory tem 1 réplica (estado em memória, `Recreate`): qualquer drain
   do nó dela derruba a dependência até o Pod subir em outro nó.
 
-**Parte F — comparação:**
+**Parte G — comparação:**
 
 | Mecanismo | Garante | Bloqueia (Pending)? | Custo para o scheduler / CA | Uso típico |
 |---|---|---|---|---|
@@ -599,6 +859,9 @@ Valores medidos no cluster `rw-0001` (10 pedidos/s) durante a validação do lab
 | `podAntiAffinity` *preferred* | nada; espalha quando pode | não (C) | médio | espalhar sem travar o scale |
 | `topologySpread` `DoNotSchedule` | diferença ≤ `maxSkew` entre domínios | sim (E2) | médio; o CA cria nó se o Pod couber num domínio novo | alta disponibilidade de serviços com HPA |
 | `topologySpread` `ScheduleAnyway` | nada; só pontua | não | médio | espalhar sem nunca travar |
+| taint `NoSchedule` + toleration | Pods sem toleration fora do nó (os que já rodam ficam) | sim, se só sobram nós com taint | baixo; o CA só cria nó com taint para quem tolera | nós dedicados (`observability`, GPU, spot) |
+| taint `PreferNoSchedule` | nada; só pontua | não | baixo | "evite este nó se puder" |
+| taint `NoExecute` | Pods sem toleration **despejados** (sem PDB) | sim, para Pods novos | baixo | falha de nó (`not-ready`/`unreachable`); isolamento imediato |
 
 ## 9. Correção
 
@@ -607,7 +870,12 @@ Não há bug a corrigir: as regras foram aplicadas de propósito. A "correção"
 ```bash
 for d in bff-api orders-api inventory-api; do
   kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
 done
+for n in $(kubectl get nodes -l workload=apps -o name); do
+  for t in dedicated maintenance; do kubectl taint $n $t- 2>/dev/null; done   # "not found" = já estava limpo
+done
+kubectl -n ecommerce patch pdb orders-api --type merge --patch-file kubernetes/labs/rollout/orders-pdb-restore.patch.yaml
 kubectl -n ecommerce patch hpa orders-api -p '{"spec":{"minReplicas":2}}'
 kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast --ignore-not-found
 kubectl uncordon $NODE_A
@@ -621,7 +889,10 @@ kubectl -n ecommerce rollout restart deploy/orders-api deploy/bff-api      # red
 for d in bff-api orders-api inventory-api; do
   echo "$d affinity=$(kubectl -n ecommerce get deploy $d -o jsonpath='{.spec.template.spec.affinity}')"
 done                                                                     # vazio nos três
+kubectl -n ecommerce get deploy -o 'custom-columns=DEPLOY:.metadata.name,TOLERATIONS:.spec.template.spec.tolerations'   # <none>
 kubectl get nodes -l workload=apps                                       # nenhum SchedulingDisabled
+kubectl get nodes -l workload=apps -o 'custom-columns=NODE:.metadata.name,TAINTS:.spec.taints'   # <none>
+kubectl -n ecommerce get pdb orders-api                                  # MAX UNAVAILABLE 1
 kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler   # READY 1/1
 kubectl -n ecommerce get pods -l 'app.kubernetes.io/name in (bff-api,orders-api)' -o wide --sort-by=.spec.nodeName
 kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhum
@@ -635,7 +906,9 @@ kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhu
 | D — `podAffinity` | D1 *preferred*, D2 *required* | D1 não muda a distribuição; D2 deixa 1 BFF `Pending` | `didn't match pod affinity rules` |
 | E2 — skew rígido | ballast no nó A + `minReplicas: 4` | réplica #4 `Pending` com ~740m livres no nó B; sobe no nó A sem ballast | evento `didn't match pod topology spread constraints` |
 | E3 — drain e volta | `drain` → `uncordon` → `rollout restart` | tudo no nó B; nada rebalanceia após `uncordon`; restart redistribui | `get pods -o wide`; BFF 0 erros (513 e 282) |
-| Ambiente restaurado | seção 9 | `affinity` vazio, nós agendáveis, CA ligado, 1 réplica por nó | comandos acima |
+| F2/F3 — `NoSchedule` + toleration | taint `dedicated` no nó A; depois toleration na Orders | os Pods do nó A ficam; a Orders reiniciada vai para o nó B; com a toleration, volta a 1 × 1 | terminal 1; `rollout status` |
+| F4 — `NoExecute` | taint `maintenance` com PDB `maxUnavailable: 0` | Orders despejada na hora, BFF após 60 s, apesar da PDB | eventos `TaintManagerEviction` |
+| Ambiente restaurado | seção 9 | `affinity` e `tolerations` vazios, nós sem taint e agendáveis, PDB `maxUnavailable: 1`, CA ligado, 1 réplica por nó | comandos acima |
 
 ## 11. Challenge
 
@@ -649,6 +922,13 @@ kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhu
 5. Repita a E3 drenando o nó **da Inventory**. Quantos `503` a BFF devolve e por quanto tempo? O que mudaria com 2
    réplicas da Inventory — e por que hoje ela não pode ter 2 (estoque em memória)?
 6. Repita a E2 com o Cluster Autoscaler **ligado**. Quanto tempo até a réplica pendente rodar, e em qual nó?
+7. Repita a F2 com `nodeTaintsPolicy: Ignore` na Orders (`kubectl -n ecommerce edit deploy orders-api`). O rollout
+   conclui? Qual mensagem aparece no terminal 2, e por quê?
+8. Aplique na Orders tolerations `not-ready`/`unreachable` com `tolerationSeconds: 30`. Que falha real esse ajuste
+   encurta (dica: pare o kubelet de um nó, ou termine a instância EC2 pelo console), e qual é o risco de usar 0?
+9. Aplique `dedicated=lab04:NoSchedule` nos **dois** nós `apps` com o CA ligado e faça um `rollout restart` da BFF.
+   O CA cria um nó novo? O que mudaria se a BFF tivesse a toleration e o node group tivesse a tag
+   `k8s.io/cluster-autoscaler/node-template/taint/dedicated`?
 
 ## 12. Critérios de sucesso
 
@@ -657,19 +937,25 @@ kubectl -n ecommerce get pods --field-selector=status.phase=Pending      # nenhu
 - [ ] C: com *preferred*, a 3ª réplica rodou empilhada.
 - [ ] D: você explica por que a D2 não tem solução (affinity **e** spread).
 - [ ] E: a 4ª réplica ficou `Pending` com CPU livre no outro nó, e após o `uncordon` nada se moveu até o restart.
-- [ ] F: você sabe dizer, para cada mecanismo da tabela, se ele filtra ou só pontua.
+- [ ] F: o taint `NoSchedule` não moveu Pods, a toleration não atraiu a Orders, e o `NoExecute` despejou apesar da PDB.
+- [ ] G: você sabe dizer, para cada mecanismo da tabela, se ele filtra ou só pontua.
 
 ## 13. Reset
 
-Os patches deste lab adicionam `spec.template.spec.affinity`, que **não existe** no manifesto: o `kubectl apply -k`
-do `scripts/reset.sh` não remove campos que ele nunca aplicou. Remova a afinidade explicitamente:
+Os patches deste lab adicionam `spec.template.spec.affinity` e `spec.template.spec.tolerations`, que **não existem** no
+manifesto: o `kubectl apply -k` do `scripts/reset.sh` não remove campos que ele nunca aplicou. Os taints ficam no nó,
+fora de qualquer manifesto. Remova tudo explicitamente (o `scripts/reset.sh` também faz isso):
 
 ```bash
 kubectl -n loadtest delete jobs -l app.kubernetes.io/name=k6     # se o k6 ainda estiver rodando
 for d in bff-api orders-api inventory-api; do
   kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml
+  kubectl -n ecommerce patch deploy $d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+done
+for n in $(kubectl get nodes -l workload=apps -o name); do
+  for t in dedicated maintenance; do kubectl taint $n $t- 2>/dev/null; done   # "not found" = já estava limpo
 done
 # equivalente em JSON patch (falha se o campo não existir):
 #   kubectl -n ecommerce patch deploy orders-api --type json -p '[{"op":"remove","path":"/spec/template/spec/affinity"}]'
-scripts/reset.sh       # HPA (minReplicas 2), ballasts, uncordon dos nós apps, CA ligado, falhas
+scripts/reset.sh       # HPA (minReplicas 2), ballasts, uncordon e taints dos nós apps, PDB, CA ligado, falhas
 ```

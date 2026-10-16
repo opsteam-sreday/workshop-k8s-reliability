@@ -4,7 +4,7 @@
 >
 > **Metodologia de todos os labs:** Break it → Observe it → Understand it → Fix it → Validate it.
 
-## 1. Agenda sugerida (5h45)
+## 1. Agenda sugerida (6h00)
 
 | Horário | Bloco | Duração |
 |---|---|---|
@@ -13,12 +13,12 @@
 | 0:55 | **LAB 02** — Probes & Graceful Shutdown | 40 min |
 | 1:35 | Intervalo | 10 min |
 | 1:45 | **LAB 03** — RollingUpdate & PodDisruptionBudget | 40 min |
-| 2:25 | **LAB 04** — Affinity, Anti-affinity & Topology Spread | 50 min |
-| 3:15 | Intervalo | 10 min |
-| 3:25 | **LAB 05** — QoS & PriorityClass | 45 min |
-| 4:10 | **LAB 06** — CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | 45 min |
-| 4:55 | **LAB 07** — Circuit Breaker | 35 min |
-| 5:30 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
+| 2:25 | **LAB 04** — Affinity, Anti-affinity, Topology Spread & Taints | 65 min |
+| 3:30 | Intervalo | 10 min |
+| 3:40 | **LAB 05** — QoS & PriorityClass | 45 min |
+| 4:25 | **LAB 06** — CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | 45 min |
+| 5:10 | **LAB 07** — Circuit Breaker | 35 min |
+| 5:45 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
 
 **Extra (fora da agenda):** [LAB X1 — ClickStack Alerting](../labs/.extras/lab-x1/README.md) (anti-pattern de alertas por
 contagem de logs, ~40 min). Use se sobrar tempo ou como material de estudo depois do evento.
@@ -131,16 +131,24 @@ na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastruct
   - PDB com réplica única (Inventory) não protege nada: ou bloqueia toda manutenção (`minAvailable: 1`) ou deixa
     remover a única réplica (`maxUnavailable: 1`). A saída é ter réplicas — que a Inventory (estado em memória) não pode.
 
-### LAB 04 — Affinity, Anti-affinity & Topology Spread
+### LAB 04 — Affinity, Anti-affinity, Topology Spread & Taints
 
 - **Break:** `nodeAffinity` para uma zona inexistente (required × preferred), `podAntiAffinity` required na Orders
   (3ª réplica `Pending`; sem `matchLabelKeys` o próprio rollout trava), anti-affinity preferred (empilha), `podAffinity`
-  da BFF com a Inventory, e o topology spread (skew rígido com ballast, drain sem rebalanceamento).
+  da BFF com a Inventory, o topology spread (skew rígido com ballast, drain sem rebalanceamento) e taints no nó A
+  (`NoSchedule` + toleration na Orders; `NoExecute` com a PDB da Orders em `maxUnavailable: 0`).
 - **Pontos de discussão:**
   - *required* bloqueia (Pod `Pending`), *preferred* só pesa no score; o scheduler não move Pods depois.
   - Anti-affinity required = no máximo 1 por domínio (escala limitada ao número de nós); topology spread = equilíbrio
     (permite N por nó). Combinar regras *required* pode não ter solução.
   - As partes B e E desligam o Cluster Autoscaler: num cluster por aluno isso só afeta o próprio aluno.
+  - Taint é a regra do **nó**, toleration é **permissão** (não atrai). Nó dedicado = taint + toleration + `nodeSelector`
+    (o nó `observability` do próprio cluster é o exemplo).
+  - `NoExecute` despeja sem passar pela API de eviction: a PDB não protege. É o mecanismo da falha de nó
+    (`not-ready`/`unreachable`, 300 s por padrão em todo Pod) — vale discutir quanto tempo o serviço fica com réplicas
+    a menos quando um nó some.
+- **Pontos de atenção (F4):** o `NoExecute` também despeja CoreDNS, metrics-server e o Cluster Autoscaler do nó A.
+  Num cluster compartilhado, faça só o instrutor. Se algo travar, `make lab04-untaint` (ou `scripts/reset.sh`).
 
 ### LAB 05 — QoS & PriorityClass
 

@@ -188,7 +188,7 @@ scripts/reset.sh
 1. [LAB 01 — First Successful Order](../labs/lab-01/README.md): pedido, reserva, DynamoDB, Pod Identity, trace e idempotência.
 2. [LAB 02 — Probes & Graceful Shutdown](../labs/lab-02/README.md): readiness × liveness × startup, rollout sem erro, deploy quebrado e anti-cascata.
 3. [LAB 03 — RollingUpdate & PodDisruptionBudget](../labs/lab-03/README.md): estratégias de rollout, Recreate e o que a PDB protege (e o que não).
-4. [LAB 04 — Affinity, Anti-affinity & Topology Spread](../labs/lab-04/README.md): onde os Pods rodam, regras required × preferred e drain de nó.
+4. [LAB 04 — Affinity, Anti-affinity, Topology Spread & Taints](../labs/lab-04/README.md): onde os Pods rodam, regras required × preferred, drain de nó e taints × tolerations.
 5. [LAB 05 — QoS & PriorityClass](../labs/lab-05/README.md): throttling, OOMKilled, eviction e preemption.
 6. [LAB 06 — CPU Stress & Autoscaling](../labs/lab-06/README.md): HPA, Pods Pending e Cluster Autoscaler.
 7. [LAB 07 — Circuit Breaker](../labs/lab-07/README.md): timeout, retry, OPEN, HALF_OPEN e CLOSED.

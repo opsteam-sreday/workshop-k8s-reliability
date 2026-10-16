@@ -1,0 +1,7 @@
+# LAB 04 F3 — toleration para o taint dedicated=lab04:NoSchedule do nó A: a Orders PODE voltar ao nó A, mas nada a
+# ATRAI para lá (toleration não é afinidade). Com nodeTaintsPolicy: Honor, o nó A volta a contar no spread → 1 × 1.
+spec:
+  template:
+    spec:
+      tolerations:
+        - {key: dedicated, operator: Equal, value: lab04, effect: NoSchedule}

@@ -293,8 +293,8 @@ lab03-restore: ## Uncordon + redistribui BFF/Orders + CA on + estoque inicial
 	$(CA_SCALE) --replicas=1
 	scripts/fault.sh inventory reset-stock
 
-##@ LAB 04 — Affinity, Anti-affinity & Topology Spread (NODE_A=<nó apps>, ZONE_A=<zona do nó A>, N=<réplicas>)
-.PHONY: lab04-load lab04-watch lab04-zone-required-missing lab04-zone-preferred-missing lab04-zone-required lab04-anti-naive lab04-anti-required lab04-anti-preferred lab04-replicas lab04-affinity-preferred lab04-affinity-required lab04-clear lab04-spread-fill lab04-spread-release lab04-drain lab04-rebalance
+##@ LAB 04 — Affinity, Anti-affinity, Topology Spread & Taints (NODE_A=<nó apps>, ZONE_A=<zona do nó A>, N=<réplicas>)
+.PHONY: lab04-load lab04-watch lab04-zone-required-missing lab04-zone-preferred-missing lab04-zone-required lab04-anti-naive lab04-anti-required lab04-anti-preferred lab04-replicas lab04-affinity-preferred lab04-affinity-required lab04-clear lab04-spread-fill lab04-spread-release lab04-drain lab04-rebalance lab04-taint lab04-tolerate lab04-noexecute-prep lab04-noexecute lab04-untaint
 lab04-load: ## Carga contínua com retry do cliente (RATE=10 DURATION=45m)
 	scripts/k6.sh create-orders.js RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),45m)
 
@@ -329,8 +329,9 @@ lab04-affinity-preferred: ## D1: BFF prefere o nó da Inventory (podAffinity pre
 lab04-affinity-required: ## D2: BFF exige o nó da Inventory (podAffinity required)
 	$(NS) patch deploy bff-api --patch-file kubernetes/labs/scheduling/bff-affinity-inventory-required.patch.yaml
 
-lab04-clear: ## Remove as afinidades das 3 APIs + CA on
+lab04-clear: ## Remove as afinidades e tolerations das 3 APIs + CA on
 	for d in bff-api orders-api inventory-api; do $(NS) patch deploy $$d --patch-file kubernetes/labs/scheduling/clear-affinity.patch.yaml; done
+	for d in bff-api orders-api inventory-api; do $(NS) patch deploy $$d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml; done
 	$(CA_SCALE) --replicas=1
 
 lab04-spread-fill: ## E2: CA off + ocupa só o nó A + Orders com 4 réplicas (NODE_A=...)
@@ -351,6 +352,34 @@ lab04-rebalance: ## E3: uncordon do nó A + rollout restart (redistribui) + CA o
 	$(NS) rollout status deploy/orders-api
 	$(NS) rollout status deploy/bff-api
 	$(CA_SCALE) --replicas=1
+
+lab04-taint: ## F2: taint dedicated=lab04:NoSchedule no nó A + rollout restart da Orders (NODE_A=...)
+	kubectl taint nodes $(NODE_A) dedicated=lab04:NoSchedule
+	$(NS) rollout restart deploy/orders-api
+	$(NS) rollout status deploy/orders-api
+
+lab04-tolerate: ## F3: Orders tolera o taint dedicated do nó A
+	$(NS) patch deploy orders-api --patch-file kubernetes/labs/scheduling/orders-tolerate-dedicated.patch.yaml
+	$(NS) rollout status deploy/orders-api
+
+lab04-noexecute-prep: ## F4: tira o taint da F2, BFF tolera NoExecute por 60 s, PDB da Orders em 0 (NODE_A=...)
+	kubectl taint nodes $(NODE_A) dedicated- || true
+	$(NS) patch deploy orders-api --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml
+	$(NS) patch deploy bff-api --patch-file kubernetes/labs/scheduling/bff-tolerate-maintenance.patch.yaml
+	$(NS) rollout status deploy/orders-api
+	$(NS) rollout status deploy/bff-api
+	$(NS) patch pdb orders-api --type merge --patch-file kubernetes/labs/rollout/orders-pdb-zero.patch.yaml
+
+lab04-noexecute: ## F4: taint maintenance=lab04:NoExecute no nó A (despeja sem PDB) (NODE_A=...)
+	kubectl taint nodes $(NODE_A) maintenance=lab04:NoExecute
+
+lab04-untaint: ## F: remove os taints dos nós apps, tolerations e PDB 0 + rollout restart (redistribui)
+	for n in $$(kubectl get nodes -l workload=apps -o name); do for t in dedicated maintenance; do kubectl taint $$n $$t- 2>/dev/null || true; done; done
+	$(NS) patch pdb orders-api --type merge --patch-file kubernetes/labs/rollout/orders-pdb-restore.patch.yaml
+	for d in bff-api orders-api; do $(NS) patch deploy $$d --patch-file kubernetes/labs/scheduling/clear-tolerations.patch.yaml; done
+	$(NS) rollout restart deploy/orders-api deploy/bff-api
+	$(NS) rollout status deploy/orders-api
+	$(NS) rollout status deploy/bff-api
 
 ##@ LAB 05 — QoS & PriorityClass
 .PHONY: lab05-qos lab05-throttle lab05-cpustat lab05-oom lab05-noisy lab05-preempt lab05-load lab05-observe lab05-fix
