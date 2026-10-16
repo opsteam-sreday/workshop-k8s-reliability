@@ -58,9 +58,9 @@ Variáveis do seu ambiente (os demais nomes derivam do `CLUSTER_ID` — ver `scr
 
 ```bash
 export AWS_REGION=us-east-1
-export STUDENT_ID=clusterXXXX                 # use o seu ID
-export CLUSTER_NAME=rw-$STUDENT_ID
-export TABLE_NAME=rw-$STUDENT_ID-orders
+export CLUSTER_ID=clusterXXXX             # use o seu ID (ex.: cluster0001)
+export CLUSTER_NAME=rw-$CLUSTER_ID
+export TABLE_NAME=rw-$CLUSTER_ID-orders
 ```
 
 ## 4. Estado inicial
