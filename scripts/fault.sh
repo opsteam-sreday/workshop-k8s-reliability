@@ -16,6 +16,11 @@
 #   fault.sh orders crash-after-reservation | inventory-timeout <ms> | cb | cb-reset
 # BFF API:
 #   fault.sh bff timeout <ms>
+# Probes (LAB 06; <pod> obrigatório para não atingir todas as réplicas):
+#   fault.sh <inventory|orders|bff> not-ready <pod>       readiness 503, liveness 200 (sai do Service, não reinicia)
+#   fault.sh <inventory|orders|bff> ready [pod]           desfaz o not-ready (sem pod: todos)
+#   fault.sh <inventory|orders|bff> freeze <s> <pod>      trava o event loop por <s> s (1..300): probes sem resposta
+#   fault.sh <inventory|orders|bff> health [pod]          started / shutting_down / forced_not_ready
 # Geral:
 #   fault.sh <inventory|orders|bff> status|reset      fault.sh all reset
 source "$(dirname "$0")/lib/common.sh"
@@ -23,6 +28,19 @@ require kubectl
 
 svc="${1:?serviço: inventory|orders|bff|all}"; action="${2:-status}"; arg="${3:-}"
 put() { admin_call "$1" PUT /admin/faults "$2"; }
+deploy_of() { case "$1" in inventory) echo inventory-api ;; orders) echo orders-api ;; bff) echo bff-api ;; *) echo "" ;; esac; }
+
+case "$action" in
+  not-ready|ready|freeze|health)
+    d="$(deploy_of "$svc")"; [[ -n "$d" ]] || fail "serviço inválido para ${action}: ${svc}"
+    case "$action" in
+      not-ready) ADMIN_POD="${arg:?pod}" admin_call "$d" PUT /admin/health '{"ready":false}' ;;
+      ready)     ADMIN_POD="${arg:-}" admin_call "$d" PUT /admin/health '{"ready":true}' ;;
+      freeze)    ADMIN_POD="${4:?pod}" admin_call "$d" POST "/admin/health/freeze?seconds=${arg:?segundos}" ;;
+      health)    ADMIN_POD="${arg:-}" admin_call "$d" GET /admin/health ;;
+    esac
+    exit 0 ;;
+esac
 
 case "$svc:$action" in
   inventory:latency)            put inventory-api "{\"fault_mode\":\"LATENCY\",\"latency_ms\":${arg:?ms},\"fault_target\":\"${4:-ALL}\"}" ;;
@@ -49,7 +67,10 @@ case "$svc:$action" in
   orders:reset)                 admin_call orders-api POST /admin/faults/reset ;;
   bff:reset)                    admin_call bff-api POST /admin/faults/reset ;;
   all:reset)
-    for d in inventory-api orders-api bff-api; do admin_call "$d" POST /admin/faults/reset; done
+    for d in inventory-api orders-api bff-api; do
+      admin_call "$d" POST /admin/faults/reset
+      admin_call "$d" PUT /admin/health '{"ready":true}'
+    done
     admin_call orders-api POST /admin/circuit-breaker/reset ;;
-  *) sed -n '2,22p' "$0"; exit 1 ;;
+  *) sed -n '2,27p' "$0"; exit 1 ;;
 esac

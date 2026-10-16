@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, Response
 
 from workshop_common.config import env_bool, env_int, env_str
 from workshop_common.context import current_request_id
-from workshop_common.health import HealthState, health_router
+from workshop_common.health import HealthState, health_admin_router, health_router
 from workshop_common.http import ApiError, RequestContextMiddleware, install_error_handlers
 from workshop_common.telemetry import instrument_fastapi, setup_telemetry
 
@@ -142,6 +142,7 @@ async def get_order(order_id: str, x_customer_id: str | None = Header(default=No
 
 
 admin_app = FastAPI(title="BFF Admin (workshop only)")
+admin_app.include_router(health_admin_router(health))
 
 
 @admin_app.get("/admin/faults")

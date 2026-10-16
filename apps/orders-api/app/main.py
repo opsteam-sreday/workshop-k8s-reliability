@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from workshop_common.config import env_bool
-from workshop_common.health import HealthState, health_router
+from workshop_common.health import HealthState, health_admin_router, health_router
 from workshop_common.http import ApiError, RequestContextMiddleware, error_body, install_error_handlers
 from workshop_common.stress import burn_cpu
 from workshop_common.telemetry import instrument_fastapi, setup_telemetry
@@ -180,6 +180,7 @@ async def get_order(order_id: str, x_customer_id: str | None = Header(default=No
 # API administrativa de laboratório: escuta apenas em 127.0.0.1
 # --------------------------------------------------------------------------------------
 admin_app = FastAPI(title="Orders Admin (workshop only)")
+admin_app.include_router(health_admin_router(health))
 
 
 class OrdersFaults(BaseModel):

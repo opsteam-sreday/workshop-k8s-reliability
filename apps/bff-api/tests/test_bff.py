@@ -61,3 +61,28 @@ async def test_upstream_timeout_returns_504():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://bff") as c:
         r = await c.post("/orders", json=PAYLOAD, headers={"Idempotency-Key": KEY})
     assert r.status_code == 504 and r.json()["error"] == "UPSTREAM_TIMEOUT"
+
+
+async def test_forced_not_ready_fails_only_readiness():
+    main.health.started = True
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.admin_app), base_url="http://admin") as admin, \
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://bff") as c:
+        try:
+            assert (await admin.put("/admin/health", json={"ready": False})).json()["forced_not_ready"] is True
+            ready = await c.get("/health/ready")
+            assert ready.status_code == 503 and ready.json()["forced_not_ready"] is True
+            assert (await c.get("/health/live")).status_code == 200
+        finally:
+            await admin.put("/admin/health", json={"ready": True})
+        assert (await c.get("/health/ready")).status_code == 200
+
+
+async def test_freeze_blocks_the_event_loop_after_responding(monkeypatch):
+    scheduled = []
+    loop = __import__("asyncio").get_running_loop()
+    monkeypatch.setattr(loop, "call_later", lambda delay, fn, *args: scheduled.append((delay, fn, args)))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.admin_app), base_url="http://admin") as admin:
+        r = await admin.post("/admin/health/freeze", params={"seconds": 30})
+        assert r.status_code == 200 and r.json() == {"frozen_seconds": 30}
+        assert (await admin.post("/admin/health/freeze", params={"seconds": 0})).status_code == 422
+    assert scheduled == [(0.2, __import__("time").sleep, (30,))]

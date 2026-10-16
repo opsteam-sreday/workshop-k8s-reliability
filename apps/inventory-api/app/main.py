@@ -14,7 +14,7 @@ from opentelemetry.metrics import CallbackOptions, Observation
 from pydantic import BaseModel, Field, field_validator
 
 from workshop_common.config import env_bool, env_int
-from workshop_common.health import HealthState, health_router
+from workshop_common.health import HealthState, health_admin_router, health_router
 from workshop_common.http import ApiError, RequestContextMiddleware, install_error_handlers
 from workshop_common.telemetry import instrument_fastapi, setup_telemetry
 
@@ -162,6 +162,7 @@ async def release_reservation(reservation_id: str, fencing_token: int | None = Q
 # API administrativa de laboratório: escuta apenas em 127.0.0.1 (ver workshop_common.server)
 # --------------------------------------------------------------------------------------
 admin_app = FastAPI(title="Inventory Admin (workshop only)")
+admin_app.include_router(health_admin_router(health))
 
 
 @admin_app.get("/admin/faults")

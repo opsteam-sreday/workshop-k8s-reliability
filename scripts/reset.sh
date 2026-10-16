@@ -14,7 +14,7 @@ if [[ -f "$OVERLAY_DIR/kustomization.yaml" ]]; then
   kubectl apply -k "$OVERLAY_DIR" >/dev/null
   # `kubectl apply` não remove campos adicionados por `kubectl patch/set` fora do manifest.
   kubectl -n ecommerce patch deploy inventory-api --patch-file "$REPO_ROOT/kubernetes/labs/priority/inventory-restore-priority.patch.yaml" >/dev/null
-  kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS- >/dev/null 2>&1 || true
+  kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS- SHUTDOWN_DELAY_SECONDS- ORDERS_TABLE_NAME- >/dev/null 2>&1 || true
   kubectl -n ecommerce patch deploy inventory-api --type json --patch-file "$REPO_ROOT/kubernetes/labs/qos/inventory-burstable.patch.json" >/dev/null
 else
   warn "Overlay gerado ausente — execute scripts/deploy.sh"
