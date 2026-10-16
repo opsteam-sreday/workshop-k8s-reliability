@@ -188,6 +188,7 @@ scripts/reset.sh
 3. [LAB 03 — QoS & PriorityClass](../labs/lab-03/README.md): throttling, OOMKilled, eviction e preemption.
 4. [LAB 04 — Circuit Breaker](../labs/lab-04/README.md): timeout, retry, OPEN, HALF_OPEN e CLOSED.
 5. [LAB 05 — ClickStack Alerting](../labs/lab-05/README.md): quatro alertas e o anti-pattern de contagem de logs.
+6. [LAB 06 — Probes & Graceful Shutdown](../labs/lab-06/README.md): readiness × liveness × startup, rollout sem erro e deploy quebrado.
 
 Execute `scripts/reset.sh` ao terminar cada laboratório.
 
