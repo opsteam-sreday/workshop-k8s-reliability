@@ -137,6 +137,16 @@ labs/lab-02/count-responses.sh "$T0"
 scripts/fault.sh orders ready $POD     # desfaz; observe o terminal 1 por mais 10 s
 ```
 
+> **💡 O que você deveria ter notado (A1)**
+>
+> - Em **~10 s** o Pod foi para `READY=false` e saiu do EndpointSlice (`recebe-tráfego=não`).
+> - Em 2 minutos fora, **`RESTARTS` continuou 0**: readiness falhando **não** reinicia o container.
+> - O evento foi `Readiness probe failed: HTTP probe failed with statuscode: 503`: o Pod **respondeu**, só disse "não".
+> - A BFF teve **0 erros**: a outra réplica absorveu o tráfego.
+> - Depois do `ready`, ele voltou ao Service em **~5 s** (basta um sucesso da readiness).
+>
+> **Lição:** readiness decide **tráfego**, não o ciclo de vida do container.
+
 ### Parte A2 — processo travado
 
 ```mermaid
@@ -163,6 +173,18 @@ scripts/fault.sh orders freeze 90 $POD
 ```
 
 Observe por **~90 s** (até o Pod voltar a `READY=true`). Depois: `labs/lab-02/count-responses.sh "$T0"`.
+
+> **💡 O que você deveria ter notado (A2)**
+>
+> - As duas probes falharam por **timeout** (`context deadline exceeded`), não por `503`: o processo não respondia.
+> - Primeiro o Pod saiu do tráfego (**~14 s**, readiness), e só depois veio `Killing … failed liveness probe` (**~36 s**).
+> - Entre o `Killing` e o novo `Started` passaram **~30 s**: travado, o processo não tratou o `SIGTERM`, e o kubelet
+>   esperou o `terminationGracePeriodSeconds` inteiro antes do `SIGKILL`.
+> - O restart veio **antes** dos 90 s do `freeze` acabarem: foi a liveness que destravou a réplica.
+> - Se a BFF tinha conexões com essa réplica, alguns pedidos voltaram `504` (presos até o timeout de 3 s) e `409`
+>   (retry com a mesma chave enquanto o lease estava com a réplica travada).
+>
+> **Lição:** as duas probes falham, mas em tempos e com ações diferentes: **isolar** primeiro, **reiniciar** depois.
 
 ### Parte B — rollout sob carga (graceful shutdown)
 
@@ -191,6 +213,15 @@ kubectl -n ecommerce rollout status deploy/orders-api
 sleep 15; kill %1
 labs/lab-02/count-responses.sh "$T0"
 ```
+
+> **💡 O que você deveria ter notado (B)**
+>
+> - O Pod antigo registrou `SIGTERM recebido: readiness=false, aguardando 5.0s antes de encerrar`.
+> - O Pod novo ficou `1/1` **antes** de um antigo ser encerrado (`maxSurge: 1, maxUnavailable: 0`).
+> - A BFF teve **0 erros** durante todo o rollout.
+>
+> **Lição:** um rollout sem erro depende de duas coisas juntas: a estratégia que só remove depois que o novo está
+> pronto **e** o graceful shutdown (sair dos endpoints antes de parar). O LAB 03 mostra o que acontece sem cada uma.
 
 ### Parte C — deploy quebrado (startup)
 
@@ -249,6 +280,18 @@ kubectl -n ecommerce rollout status deploy/orders-api --timeout=10s      # trava
 labs/lab-02/count-responses.sh "$T0"
 ```
 
+> **💡 O que você deveria ter notado (C)**
+>
+> - O Pod novo nunca passou de `0/1`, enquanto os **2 antigos seguiram `1/1`** atendendo.
+> - `/health/startup` respondeu `503` **com a causa** (`last_error: … AccessDeniedException …`); `/health/live`
+>   respondeu `200`: o processo está vivo, e reiniciar não conserta configuração errada.
+> - Após **~2 min** (60 × 2 s) veio `Container app failed startup probe, will be restarted`, e o `rollout status`
+>   ficou travado (`timed out waiting for the condition`).
+> - A BFF teve **0 erros**: o Pod quebrado nunca recebeu tráfego.
+>
+> **Lição:** startup probe + `maxUnavailable: 0` transformam um deploy quebrado em um rollout **parado**, não em
+> uma queda. O `last_error` na startup probe economiza a investigação.
+
 ### Parte D — dependência fora do ar (anti-cascata)
 
 ```mermaid
@@ -271,6 +314,15 @@ scripts/fault.sh orders cb
 labs/lab-02/count-responses.sh "$T0"
 scripts/fault.sh all reset
 ```
+
+> **💡 O que você deveria ter notado (D)**
+>
+> - A Orders continuou **`1/1`, sem nenhum evento de probe**, com a Inventory respondendo `503`.
+> - O Circuit Breaker abriu (`OPEN` / `HALF_OPEN`) e os pedidos voltaram `503 DEPENDENCY_UNAVAILABLE` com
+>   `Retry-After`: um erro de **negócio**, rápido e explicável, em vez de erro de conexão.
+>
+> **Lição:** a readiness **não** deve verificar dependências. Se verificasse, as 2 réplicas da Orders sairiam do
+> Service juntas e a falha da Inventory se espalharia até a BFF (cascata).
 
 ## 7. Observações
 
