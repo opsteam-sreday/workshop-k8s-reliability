@@ -6,3 +6,6 @@ __pycache__/
 *.log
 kubernetes/overlays/generated/
 infrastructure/students.csv
+
+# AI agent working artifacts (task reports, reviews)
+.agents/

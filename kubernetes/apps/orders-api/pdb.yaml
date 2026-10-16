@@ -1,0 +1,13 @@
+# PDB da Orders API: 2 réplicas no manifesto, com HPA entre 2 e 12 (hpa.yaml).
+# maxUnavailable: 1 absoluto é a única forma que permanece correta em toda a faixa do HPA:
+# no piso (2 réplicas) ainda permite uma evicção por vez, deixando 1 pod servindo.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: orders-api
+  namespace: ecommerce
+  labels: {app.kubernetes.io/name: orders-api, app.kubernetes.io/part-of: reliability-workshop}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: orders-api}

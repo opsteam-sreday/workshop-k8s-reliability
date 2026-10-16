@@ -9,3 +9,4 @@ resources:
   - networkpolicy.yaml
   - hpa.yaml
   - admission-policy.yaml
+  - pdb.yaml

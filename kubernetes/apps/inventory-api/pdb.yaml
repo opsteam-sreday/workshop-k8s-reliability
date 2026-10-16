@@ -1,0 +1,16 @@
+# PDB da Inventory API: 1 réplica hoje.
+# ATENÇÃO: com 1 réplica este PDB NÃO oferece proteção real de disponibilidade —
+# qualquer evicção derruba o único pod. Para proteção de verdade o Deployment
+# precisa ser escalado para >= 2 réplicas (e então a strategy Recreate deve virar RollingUpdate).
+# maxUnavailable: 1 é a escolha segura para drain: mantém o budget sempre satisfeito,
+# então upgrades de nó / consolidação nunca ficam travados (minAvailable: 1 travaria).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inventory-api
+  namespace: ecommerce
+  labels: {app.kubernetes.io/name: inventory-api, app.kubernetes.io/part-of: reliability-workshop}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: inventory-api}

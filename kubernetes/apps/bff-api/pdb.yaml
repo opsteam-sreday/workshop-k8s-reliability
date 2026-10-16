@@ -1,0 +1,13 @@
+# PDB da BFF API: 2 réplicas hoje (sem HPA).
+# maxUnavailable: 1 permite drenar um nó de cada vez mantendo sempre 1 pod servindo,
+# e continua correto se o número de réplicas mudar (ao contrário de um minAvailable fixo).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bff-api
+  namespace: ecommerce
+  labels: {app.kubernetes.io/name: bff-api, app.kubernetes.io/part-of: reliability-workshop}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: bff-api}
