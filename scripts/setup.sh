@@ -6,6 +6,7 @@
 # Idempotente: pode ser executado novamente para completar etapas pendentes.
 source "$(dirname "$0")/lib/common.sh"
 require aws kubectl eksctl helm python3 perl
+require_aws_session
 account_id >/dev/null
 
 cat <<INFO
@@ -22,7 +23,7 @@ confirm "Criar/atualizar estes recursos na AWS (geram custo)?" || fail "Cancelad
 
 # ---------------------------------------------------------------- 1. EKS
 section "1/9 · VPC e cluster Amazon EKS"
-if eksctl get cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+if cluster_exists; then
   ok "Cluster $CLUSTER_NAME já existe — etapa ignorada"
 else
   run "Criar a VPC do cluster (≈3 min)" \

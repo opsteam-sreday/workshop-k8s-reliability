@@ -2,13 +2,14 @@
 # Remove TODOS os recursos do workshop (Kubernetes, volumes EBS, IAM, DynamoDB, ECR e EKS).
 source "$(dirname "$0")/lib/common.sh"
 require aws kubectl eksctl helm
+require_aws_session
 account_id >/dev/null
 # Imagens ECR são compartilhadas pelos clusters da conta: só saem com DELETE_IMAGES=true (último ambiente).
 DELETE_IMAGES="${DELETE_IMAGES:-false}"
 warn "Isto removerá o cluster ${CLUSTER_NAME}, a tabela ${TABLE_NAME}, as roles ${ORDERS_ROLE_NAME}/${STUDENT_ROLE_NAME}$([[ "$DELETE_IMAGES" == true ]] && echo ", os repositórios ECR ${ECR_PREFIX}/*") e os volumes EBS do workshop (conta ${AWS_ACCOUNT_ID}, ${AWS_REGION})."
 confirm "Confirmar remoção definitiva?" || fail "Cancelado"
 
-if aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+if cluster_exists; then
   aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION" --alias "$CLUSTER_NAME" >/dev/null
   kubectl config use-context "$CLUSTER_NAME" >/dev/null
   info "Removendo workloads e releases Helm"
@@ -40,11 +41,12 @@ else
   ok "Imagens ECR ${ECR_PREFIX}/* mantidas (compartilhadas; DELETE_IMAGES=true para remover)"
 fi
 
-if eksctl get cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+if cluster_exists; then
   info "Removendo cluster EKS (≈10-15 min)"
   eksctl delete cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --wait --disable-nodegroup-eviction
 fi
-# A VPC é criada fora do eksctl (infrastructure/vpc/), então sai depois do cluster.
+# A VPC é criada fora do eksctl (infrastructure/vpc/), então sai depois do cluster — e só se ele saiu mesmo.
+cluster_exists && fail "Cluster ${CLUSTER_NAME} ainda existe: VPC mantida (repita o teardown)"
 "$REPO_ROOT/infrastructure/vpc/vpc.sh" delete || warn "VPC ${CLUSTER_NAME}-vpc não removida (ENIs ainda em uso? repita o teardown)"
 
 info "Verificando recursos remanescentes"

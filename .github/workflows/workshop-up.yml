@@ -1,5 +1,6 @@
 # Provisiona o ambiente completo do workshop (equivalente a `make up`): imagens + setup + deploy + validate.
 # As imagens vêm do workflow images.yml (um job por app, multi-arch); este só faz o deploy delas.
+# Também é chamado pelo fleet-up (workflow_call), um job por aluno, com skip_images (imagens já publicadas).
 # Pré-requisitos (uma vez por conta/repositório): ver README › "Provisionamento via GitHub Actions".
 name: workshop-up
 
@@ -21,6 +22,13 @@ on:
         description: Executar scripts/validate.sh ao final
         type: boolean
         default: true
+  workflow_call:
+    inputs:
+      aws_region: {type: string, default: us-east-1}
+      student_id: {type: string, required: true}
+      student_username: {type: string, default: ""}
+      validate: {type: boolean, default: true}
+      skip_images: {type: boolean, default: false, description: "true = imagens já publicadas por quem chamou"}
 
 permissions:
   id-token: write   # OIDC -> sts:AssumeRoleWithWebIdentity
@@ -44,12 +52,14 @@ env:
 
 jobs:
   images:
+    if: ${{ !inputs.skip_images }}
     uses: ./.github/workflows/images.yml
     with:
       aws_region: ${{ inputs.aws_region }}
 
   up:
     needs: images
+    if: ${{ !failure() && !cancelled() }}   # roda com images "success" ou "skipped" (fleet-up)
     runs-on: ubuntu-latest
     environment: workshop   # exigido pela trust policy da role (infrastructure/github-actions/oidc-role.yaml)
     timeout-minutes: 150

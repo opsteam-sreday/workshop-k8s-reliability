@@ -4,7 +4,7 @@
 >
 > **Metodologia de todos os labs:** Break it → Observe it → Understand it → Fix it → Validate it.
 
-## 1. Agenda sugerida (4h40)
+## 1. Agenda sugerida (4h55)
 
 | Horário | Bloco | Duração |
 |---|---|---|
@@ -15,8 +15,8 @@
 | 1:50 | **LAB 03** — QoS & PriorityClass | 45 min |
 | 2:35 | **LAB 04** — Circuit Breaker | 35 min |
 | 3:10 | **LAB 05** — ClickStack Alerting (anti-pattern) | 35 min |
-| 3:45 | **LAB 06** — Probes & Graceful Shutdown | 40 min |
-| 4:25 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
+| 3:45 | **LAB 06** — Probes, Graceful Shutdown & Topology Spread | 55 min |
+| 4:40 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
 
 **Dica:** o scale-out de nós do LAB 02 leva de 2 a 4 minutos. Use esse tempo para discutir HPA × CA. Já o scale-down leva cerca de 4 minutos depois que a carga para (stabilization de 120 s + `scale-down-unneeded-time` de 2 min). Não espere por ele: siga para o intervalo.
 
@@ -69,11 +69,24 @@ ambiente completo `rw-<id>` com isolamento próprio:
 
 **Na véspera (≈ 1 h para 40 alunos com `PARALLEL=8`; custo ≈ US$ 22/h para a turma em repouso):**
 
-3. `make fleet-up ASSUME_YES=true` — build único das imagens e, em paralelo, setup + deploy + role do aluno +
-   validação de cada ambiente. Estado e logs por aluno em `.workshop/fleet/rw-<id>/`.
+3. Suba a turma por **um** dos caminhos (mesmo fluxo por aluno: setup + deploy + role do aluno + validação):
+   - **GitHub Actions (recomendado):** *Actions › fleet-up › Run workflow* com
+     `students = aluno01:bruno@ops.team aluno02:ana@ops.team …` (id:username do roster). Build único das imagens e
+     um job por aluno (`max_parallel`, padrão 8), cada um com log próprio. Não depende da sua máquina ligada.
+     Com *Required reviewers* no environment `workshop`, aprove os jobs pendentes (eles chegam em ondas de
+     `max_parallel`).
+   - **Local:** `make fleet-up ASSUME_YES=true`. Estado e logs por aluno em `.workshop/fleet/rw-<id>/`.
 4. `make fleet-status` — todos `ACTIVE` e validação sem falhas. Se a role SSO ainda não existia no passo 3:
    `make fleet-access`.
 5. Envie a cada aluno o resultado de `make fleet-profile STUDENT_ID=<id>` (bloco do `~/.aws/config`).
+
+**Um aluno com problema** (ambiente falhou, aluno novo, recriar do zero):
+
+- Actions: *Re-run failed jobs* no run do `fleet-up` (refaz só os que falharam) ou *workshop-up* com o
+  `student_id`/`student_username` dele.
+- Local: `make student-up STUDENT_ID=aluno07` — mesmo fluxo de um aluno do `fleet-up`, em primeiro plano, com o
+  username do roster; as etapas são idempotentes (o que já existe é mantido). Log em `.workshop/fleet/rw-aluno07/up.log`.
+- Para recriar do zero: `make student-down STUDENT_ID=aluno07 ASSUME_YES=true` e depois `make student-up …`.
 
 **Depois do evento:** `make fleet-down ASSUME_YES=true` (as imagens ECR ficam; `DELETE_IMAGES=true` remove) e,
 na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastructure/students.csv`.

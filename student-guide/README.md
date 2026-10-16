@@ -97,7 +97,8 @@ derivados estão em `scripts/lib/common.sh`.
 ## 4. Contrato da API (`POST /orders`)
 
 ```bash
-curl -s -X POST localhost:8080/orders \
+# BFF pública (NLB): export BFF=http://$(kubectl -n ecommerce get svc bff-api-public -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+curl -s -X POST $BFF/orders \
   -H 'Content-Type: application/json' \
   -H "Idempotency-Key: $(uuidgen | tr A-Z a-z)" \
   -d '{"customer_id":"customer-123","items":[{"sku":"product-001","quantity":2,"unit_price":"49.90"}]}'
@@ -133,8 +134,9 @@ SKUs disponíveis: `product-001` a `product-010`, com estoque alto, e `product-l
 ## 5. Cheat-sheet
 
 ```bash
-# Acesso local à BFF e ao HyperDX
-kubectl -n ecommerce port-forward svc/bff-api 8080:8080
+# BFF pública (NLB, porta 80) e HyperDX (port-forward)
+export BFF=http://$(kubectl -n ecommerce get svc bff-api-public -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "$BFF/docs"                                                        # Swagger da BFF (ou: make bff-url)
 kubectl -n observability port-forward svc/clickstack-app 3000:3000      # http://localhost:3000
 
 # Carga (Job k6 dentro do cluster)
@@ -188,7 +190,7 @@ scripts/reset.sh
 3. [LAB 03 — QoS & PriorityClass](../labs/lab-03/README.md): throttling, OOMKilled, eviction e preemption.
 4. [LAB 04 — Circuit Breaker](../labs/lab-04/README.md): timeout, retry, OPEN, HALF_OPEN e CLOSED.
 5. [LAB 05 — ClickStack Alerting](../labs/lab-05/README.md): quatro alertas e o anti-pattern de contagem de logs.
-6. [LAB 06 — Probes & Graceful Shutdown](../labs/lab-06/README.md): readiness × liveness × startup, rollout sem erro e deploy quebrado.
+6. [LAB 06 — Probes, Graceful Shutdown & Topology Spread](../labs/lab-06/README.md): readiness × liveness × startup, rollout sem erro, deploy quebrado e drain de nó.
 
 Execute `scripts/reset.sh` ao terminar cada laboratório.
 

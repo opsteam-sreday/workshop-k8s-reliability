@@ -4,7 +4,7 @@
 Deixa apenas SLACK_M (padrão 100m) livres por nó. Como os ballasts têm prioridade
 critical-services (igual à Orders), eles não podem ser preemptados pela Orders API: o
 ÚNICO candidato a vítima passa a ser a Inventory API (low-priority-services).
-Uso: fill-capacity.py [--slack 100]   |   remover: kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast
+Uso: fill-capacity.py [--slack 100] [--node <nó>]   |   remover: kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast
 """
 
 from __future__ import annotations
@@ -26,10 +26,15 @@ def cpu_m(value: str) -> int:
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--slack", type=int, default=100, help="millicores livres deixados em cada nó")
+parser.add_argument("--node", help="ocupa só este nó apps (LAB 06: topology spread); padrão: todos")
 args = parser.parse_args()
 
 nodes = json.loads(kubectl("get", "nodes", "-l", "workload=apps", "-o", "json"))["items"]
 pods = json.loads(kubectl("get", "pods", "-A", "-o", "json", "--field-selector=status.phase!=Succeeded,status.phase!=Failed"))["items"]
+if args.node:
+    nodes = [n for n in nodes if n["metadata"]["name"] == args.node]
+    if not nodes:
+        raise SystemExit(f"{args.node} não é um nó workload=apps")
 for node in nodes:
     name = node["metadata"]["name"]
     allocatable = cpu_m(node["status"]["allocatable"]["cpu"])

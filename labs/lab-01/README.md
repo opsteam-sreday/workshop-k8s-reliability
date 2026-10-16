@@ -58,20 +58,23 @@ kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,SA:.spec.serv
 
 Esperado: `bff-api` (2/2), `orders-api` (2/2, HPA min 2), `inventory-api` (1/1, Burstable, `critical-services`). Cada API usa sua própria ServiceAccount (`bff-api-sa`, `orders-api-sa`, `inventory-api-sa`).
 
-Abra o acesso à BFF em um terminal separado (deixe rodando):
+A BFF é exposta pelo NLB público `bff-api-public` (porta 80). Guarde a URL dele:
 
 ```bash
-kubectl -n ecommerce port-forward svc/bff-api 8080:8080
+export BFF=http://$(kubectl -n ecommerce get svc bff-api-public -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "$BFF/docs"                                             # Swagger da BFF no navegador
+curl -s -o /dev/null -w '%{http_code}\n' $BFF/health/ready   # 200
 ```
 
-> O port-forward conecta diretamente ao Pod; por isso não é bloqueado pelas NetworkPolicies, que só permitem tráfego de rede `loadtest → BFF → Orders → Inventory`.
+> Logo após o deploy, o DNS do NLB leva ~2–3 min para responder. Só a BFF é pública: a NetworkPolicy
+> `bff-api-ingress` aceita tráfego da internet (via NLB) e dos namespaces `loadtest`/`ecommerce`, enquanto Orders e
+> Inventory só aceitam a BFF (`loadtest → BFF → Orders → Inventory`).
 
 ## 5. Comandos executáveis
 
 ### 5.1 Primeiro pedido
 
 ```bash
-export BFF=http://localhost:8080
 export CUSTOMER=customer-lab01-$RANDOM
 export KEY=$(uuidgen | tr 'A-Z' 'a-z')
 cat > /tmp/order.json <<EOF
@@ -334,4 +337,4 @@ scripts/fault.sh all reset
 scripts/reset.sh
 ```
 
-Encerre os port-forwards (`Ctrl+C`). Os pedidos criados permanecem no DynamoDB, mas não interferem nos próximos labs (cada execução usa clientes e chaves novos).
+Encerre o port-forward do HyperDX, se estiver aberto (`Ctrl+C`). Os pedidos criados permanecem no DynamoDB, mas não interferem nos próximos labs (cada execução usa clientes e chaves novos).

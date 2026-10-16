@@ -122,7 +122,7 @@ alerts: ## (Re)cria webhook, saved searches e os 4 alertas no HyperDX
 
 ##@ Turma: um ambiente isolado por aluno (ROSTER=infrastructure/students.csv)
 ROSTER ?= infrastructure/students.csv
-.PHONY: fleet-quotas fleet-up fleet-access fleet-status fleet-down fleet-profile identity-center
+.PHONY: fleet-quotas fleet-up fleet-access fleet-status fleet-down fleet-profile identity-center student-up student-down
 fleet-quotas: ## Quotas da região x necessário para a turma
 	scripts/fleet.sh quotas $(ROSTER)
 
@@ -140,6 +140,12 @@ fleet-status: ## Estado do cluster e da validação de cada aluno
 
 fleet-down: ## Remove os ambientes da turma (DELETE_IMAGES=true remove as imagens)
 	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh down $(ROSTER)
+
+student-up: ## Um aluno do roster: imagens + setup/deploy/acesso/validação, em primeiro plano (STUDENT_ID=aluno07)
+	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh up-one $(ROSTER) $(STUDENT_ID)
+
+student-down: ## Remove o ambiente de um aluno do roster (STUDENT_ID=aluno07)
+	ASSUME_YES=$(ASSUME_YES) scripts/fleet.sh down-one $(ROSTER) $(STUDENT_ID)
 
 fleet-profile: ## ~/.aws/config de um aluno (STUDENT_ID=aluno01)
 	@scripts/fleet.sh profile $(ROSTER) $(STUDENT_ID)
@@ -162,7 +168,7 @@ hyperdx-credentials-push: ## Envia ao Secrets Manager as credenciais do HyperDX 
 	scripts/hyperdx-credentials.sh push
 
 ##@ Acesso
-.PHONY: hyperdx bff-port-forward hyperdx-credentials
+.PHONY: hyperdx bff-url bff-port-forward hyperdx-credentials
 hyperdx: ## Port-forward do HyperDX em http://localhost:3000
 	@echo "Credenciais: .workshop/hyperdx-credentials.json"
 	kubectl -n observability port-forward svc/clickstack-app 3000:3000
@@ -170,7 +176,12 @@ hyperdx: ## Port-forward do HyperDX em http://localhost:3000
 hyperdx-credentials: ## Mostra as credenciais do HyperDX
 	@cat .workshop/hyperdx-credentials.json
 
-bff-port-forward: ## Port-forward da BFF em http://localhost:8080
+bff-url: ## URL pública da BFF (NLB) e do Swagger
+	@h=$$($(NS) get svc bff-api-public -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'); \
+	  test -n "$$h" || { echo "NLB sem hostname ainda: kubectl -n ecommerce describe svc bff-api-public"; exit 1; }; \
+	  echo "BFF:     http://$$h"; echo "Swagger: http://$$h/docs"; echo "export BFF=http://$$h"
+
+bff-port-forward: ## Alternativa ao NLB: port-forward da BFF em http://localhost:8080
 	$(NS) port-forward svc/bff-api 8080:8080
 
 ##@ Carga (k6 dentro do cluster) — variáveis: RATE, DURATION, VUS
@@ -319,8 +330,8 @@ lab05-crash: ## Falha sem log ERROR: crash da Orders após a reserva
 lab05-stop: ## Remove as falhas do LAB 05
 	scripts/fault.sh all reset
 
-##@ LAB 06 — Probes & Graceful Shutdown (POD=<pod da Orders>)
-.PHONY: lab06-load lab06-watch lab06-not-ready lab06-ready lab06-freeze lab06-rollout lab06-break lab06-undo
+##@ LAB 06 — Probes, Graceful Shutdown & Topology Spread (POD=<pod da Orders>, NODE_A=<nó apps>)
+.PHONY: lab06-load lab06-watch lab06-not-ready lab06-ready lab06-freeze lab06-rollout lab06-break lab06-undo lab06-spread-fill lab06-spread-release lab06-drain lab06-rebalance
 lab06-load: ## Carga contínua com retry do cliente (RATE=10 DURATION=30m)
 	scripts/k6.sh create-orders.js RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),30m)
 
@@ -346,3 +357,22 @@ lab06-break: ## C: deploy quebrado (tabela inexistente)
 lab06-undo: ## C: desfaz o deploy quebrado
 	kubectl -n ecommerce rollout undo deploy/orders-api
 	kubectl -n ecommerce rollout status deploy/orders-api
+
+lab06-spread-fill: ## E2: CA off + ocupa só o nó A + Orders com 4 réplicas (NODE_A=...)
+	$(CA_SCALE) --replicas=0
+	labs/lab-03/fill-capacity.py --node $(NODE_A) --slack 100
+	$(NS) patch hpa orders-api -p '{"spec":{"minReplicas":4}}'
+
+lab06-spread-release: ## E2: remove o ballast e volta a Orders para 2 réplicas
+	kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast
+	$(NS) patch hpa orders-api -p '{"spec":{"minReplicas":2}}'
+
+lab06-drain: ## E3: drena o nó A (NODE_A=...)
+	kubectl drain $(NODE_A) --ignore-daemonsets --delete-emptydir-data
+
+lab06-rebalance: ## E3: uncordon do nó A + rollout restart (redistribui) + CA on (NODE_A=...)
+	kubectl uncordon $(NODE_A)
+	$(NS) rollout restart deploy/orders-api deploy/bff-api
+	$(NS) rollout status deploy/orders-api
+	$(NS) rollout status deploy/bff-api
+	$(CA_SCALE) --replicas=1

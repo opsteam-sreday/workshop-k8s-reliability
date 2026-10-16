@@ -224,8 +224,10 @@ labs/lab-04/watch-cb.sh        # estado do Circuit Breaker por réplica da Order
    `Preempted` — *"Preempted by pod … on node …"*. O Pod da Orders é agendado nesse nó (`nominatedNodeName`).
 3. A Inventory é recriada pelo ReplicaSet e fica `Pending`: não há espaço e ela **não pode** preemptar ninguém
    (todos os demais são `critical-services` ou `system-*`).
-4. Os novos Pods da Orders no **outro** nó continuam `Pending` com
-   *"0/N nodes are available … No preemption victims found for incoming pod"*.
+4. O outro novo Pod da Orders continua `Pending`. O topology spread da Orders (`maxSkew: 1` por nó, LAB 06) exige
+   que ele vá para o **outro** nó, que está cheio de ballasts `critical-services` (sem vítimas):
+   *"0/3 nodes are available: 1 Insufficient cpu, 1 node(s) didn't match pod topology spread constraints … preemption:
+   … Preemption is not helpful for scheduling"*.
 5. Os pedidos começam a falhar: a pré-consulta/reserva da Inventory falha (sem endpoints → erro de transporte) →
    retries → **Circuit Breaker OPEN** em cada réplica → `503 DEPENDENCY_UNAVAILABLE` com `reason=circuit_open`.
    O k6 mostra `POST /orders 201` caindo para ~0%.
