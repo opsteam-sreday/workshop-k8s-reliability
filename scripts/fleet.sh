@@ -81,7 +81,7 @@ case "$cmd" in
     used_vpc="$(aws ec2 describe-vpcs --region "$AWS_REGION" --query 'length(Vpcs)')"
     used_eip="$(aws ec2 describe-addresses --region "$AWS_REGION" --query 'length(Addresses)')"
     used_igw="$(aws ec2 describe-internet-gateways --region "$AWS_REGION" --query 'length(InternetGateways)')"
-    # Por aluno: 1 VPC, 1 IGW, 1 NAT (1 EIP); 2x m6i.large + 1x m6i.xlarge = 8 vCPU (até 14 com o CA no LAB 02).
+    # Por aluno: 1 VPC, 1 IGW, 1 NAT (1 EIP); 2x m6i.large + 1x m6i.xlarge = 8 vCPU (até 14 com o CA no LAB 06).
     printf '%-34s %8s %8s %10s\n' "Quota (${AWS_REGION})" "Atual" "Em uso" "Necessário"
     printf '%-34s %8s %8s %10s\n' "VPCs por região (L-F678F1CE)" "$(q vpc L-F678F1CE)" "$used_vpc" "$((used_vpc + n))"
     printf '%-34s %8s %8s %10s\n' "Internet gateways (L-A4707A72)" "$(q vpc L-A4707A72)" "$used_igw" "$((used_igw + n))"

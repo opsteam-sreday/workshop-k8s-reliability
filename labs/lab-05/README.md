@@ -1,400 +1,447 @@
-# LAB 05 — Probes & Graceful Shutdown
+# LAB 05 — QoS & PriorityClass
 
 > **Break it → Observe it → Understand it → Fix it → Validate it**
 >
-> Duração estimada: 40 min
+> Duração estimada: 50–60 min · Parte A (QoS) ≈ 25 min · Parte B (PriorityClass/Preemption) ≈ 25 min
 
 ---
 
 ## 1. Cenário
 
-As três APIs expõem **três** health checks com papéis diferentes:
+A Inventory API participa **de toda transação de pedido** (pré-consulta `GET /inventory/{sku}` e reserva
+`POST /inventory/reservations`). No modo STRICT do MVP, um pedido só é `CONFIRMED` depois da reserva de estoque.
 
-| Probe | Rota | Pergunta | O que o kubelet faz quando falha |
-|---|---|---|---|
-| **startup** | `/health/startup` | a inicialização terminou? | segura as outras probes; depois de 60 × 2 s = **120 s**, reinicia |
-| **readiness** | `/health/ready` | esta réplica pode receber tráfego agora? | **tira o Pod do Service** (2 falhas × 5 s), sem reiniciar |
-| **liveness** | `/health/live` | o processo está respondendo? | **reinicia o container** (3 falhas × 10 s, timeout de 3 s) |
+O time de plataforma "otimizou custos": a Inventory API ganhou requests/limits genéricos e, num cluster
+apertado, foi marcada como **baixa prioridade** porque "é só um serviço de estoque". Neste laboratório você vai
+ver o que acontece com essa dependência quando:
+
+- o **nó** fica sob pressão de CPU/memória (domínio do **QoS**);
+- o **scheduler** fica sem capacidade para agendar Pods críticos (domínio da **PriorityClass/preemption**).
 
 ```mermaid
 flowchart LR
-    K["kubelet<br/>(a cada período)"] --> S{"startup<br/>/health/startup<br/>a cada 2 s"}
-    S -- "503 por 60 × 2 s = 120 s" --> R1["reinicia o container"]
-    S -- "200 (started=true)" --> P["liberadas as probes<br/>readiness e liveness"]
-    P --> RD{"readiness<br/>/health/ready<br/>a cada 5 s"}
-    P --> LV{"liveness<br/>/health/live<br/>a cada 10 s"}
-    RD -- "2 falhas" --> EP["Pod sai do EndpointSlice<br/>(sem tráfego, sem restart)"]
-    RD -- "1 sucesso" --> IN["Pod volta a receber tráfego"]
-    LV -- "3 falhas (timeout 3 s)" --> R2["reinicia o container"]
+    subgraph NODE["Pressão no NÓ → kubelet / kernel (QoS: requests/limits)"]
+        direction TB
+        C1["Uso de CPU acima do limit"] --> T1["CPU throttling (CFS cpu.max)<br/>Pod continua vivo, fica lento"]
+        M1["Memória do container atinge o limit"] --> O1["OOMKilled (kernel)<br/>container reinicia, estado em memória perdido"]
+        N1["Nó sem memória (memory.available baixo)"] --> E1["Eviction (kubelet)<br/>BestEffort primeiro, depois Burstable acima do request"]
+    end
+    subgraph SCHED["Falta de capacidade de AGENDAMENTO → kube-scheduler (PriorityClass)"]
+        direction TB
+        P1["Pod novo não cabe em nenhum nó"] --> P2{"Existe Pod de prioridade<br/>ESTRITAMENTE menor que libere o suficiente?"}
+        P2 -- sim --> P3["Preemption: vítima removida<br/>(QoS não entra na conta)"]
+        P2 -- não --> P4["Pod fica Pending<br/>(Cluster Autoscaler, se ligado, cria nó)"]
+    end
 ```
-
-Neste lab você faz cada probe falhar **de propósito**, em uma réplica, e observa o que o Kubernetes faz com o
-tráfego e com o container. Para isso, a API admin (só `127.0.0.1`, via `kubectl exec`) tem duas falhas:
-
-| Comando | O que faz dentro do Pod | `/health/ready` | `/health/live` |
-|---|---|---|---|
-| `scripts/fault.sh orders not-ready <pod>` | liga a flag `forced_not_ready` | **503** | **200** |
-| `scripts/fault.sh orders freeze <s> <pod>` | `time.sleep(<s>)` síncrono **dentro do event loop**: o processo para de atender tudo | sem resposta (timeout) | sem resposta (timeout) |
-
-> Por que não `kill -STOP 1`? O Linux protege o PID 1 de um container: `SIGSTOP` enviado de dentro do próprio
-> container é ignorado. O `freeze` reproduz o mesmo efeito (processo vivo, mas travado).
-
-> Contra a perda de um **nó** (topology spread, drain) veja o [LAB 07](../lab-07/README.md), junto com affinity e
-> anti-affinity. Rollouts agressivos e PodDisruptionBudget estão no [LAB 06](../lab-06/README.md).
 
 ## 2. Hipótese
 
-1. Com **readiness** falhando e liveness OK, o Pod sai do tráfego em ~10 s e **nunca** é reiniciado.
-2. Com o processo **travado**, o Pod primeiro sai do tráfego (readiness) e, ~30 s depois, é **reiniciado** (liveness).
-3. Um **rollout** sob carga não gera erros: no `SIGTERM` a réplica deixa de ficar pronta e espera 5 s antes de parar.
-4. Um deploy com configuração errada **não derruba o serviço**: o Pod novo nunca fica pronto, o rollout não avança e
-   as réplicas antigas continuam atendendo.
-5. Com a **Inventory fora do ar**, a Orders **continua pronta** (a readiness não verifica dependências): o erro
-   aparece como `503 DEPENDENCY_UNAVAILABLE`, não como Pods `NotReady`.
+1. Requests/limits determinam a `QoSClass` (`BestEffort`, `Burstable`, `Guaranteed`), e cada classe sofre de forma
+   diferente: **limit de CPU causa throttling** (não mata), **limit de memória causa OOMKilled** (mata o container),
+   **pressão no nó causa eviction** (kubelet remove Pods — BestEffort primeiro).
+2. `Guaranteed` **não** protege contra preemption: um Pod Guaranteed de baixa prioridade é removido pelo scheduler para
+   abrir espaço a um Pod de prioridade maior.
+3. Como a Inventory API é dependência transacional, removê-la derruba **todos** os pedidos (503 + Circuit Breaker OPEN).
+   QoS e PriorityClass resolvem problemas **diferentes**.
 
 ## 3. Pré-requisitos
 
-- LAB 01 concluído; `scripts/reset.sh` executado.
-- `export CLUSTER_ID=<seu id>` (ex.: `aluno07`) e kubectl apontando para o seu cluster.
-- **4 terminais** abertos na raiz do repositório (todos com o mesmo `CLUSTER_ID`).
+- LAB 01 concluído (`scripts/validate.sh` sem falhas).
+- `kubectl` apontando para o cluster do workshop; `python3` local (para `fill-capacity.py`).
+- Acesso ao HyperDX: `kubectl -n observability port-forward svc/clickstack-app 3000:3000` → <http://localhost:3000>
+  (credenciais em `.workshop/hyperdx-credentials.json`).
+- Três terminais: **T1** comandos, **T2** observação (`watch`/scripts), **T3** carga k6.
 
 ## 4. Estado inicial
 
 ```bash
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api
-scripts/fault.sh orders health
+scripts/reset.sh
+kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,QOS:.status.qosClass,PRIORITY:.spec.priorityClassName,NODE:.spec.nodeName
+kubectl get priorityclass critical-services low-priority-services
+kubectl get nodes -l workload=apps
 ```
 
-Esperado: 2 réplicas `1/1`, `RESTARTS 0`, e em cada Pod
-`{"started":true,"shutting_down":false,"forced_not_ready":false}`.
+Esperado:
 
-Escolha **uma** réplica como alvo e guarde o nome nos terminais 1, 2 e 4:
+| Workload | QoSClass | PriorityClass |
+|---|---|---|
+| bff-api (2) | Burstable (200m/256Mi → 1000m/256Mi) | `critical-services` (1000) |
+| orders-api (2+) | Burstable (250m/256Mi → 1000m/384Mi) | `critical-services` (1000) |
+| inventory-api (1) | Burstable (100m/128Mi → 500m/512Mi) | `critical-services` (1000) — o lab troca para `low-priority-services` |
 
-```bash
-export POD=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api -o jsonpath='{.items[0].metadata.name}')
-echo $POD
-```
+2 nós `apps` (`m6i.large`), Cluster Autoscaler com 1 réplica.
+
+---
 
 ## 5. Comandos executáveis
 
-Deixe rodando durante todo o lab:
+### Parte A — QoS
+
+#### A.1 Classificação QoS dos três perfis
 
 ```bash
-# Terminal 1 — painel do Pod-alvo: READY, RESTARTS e se ele recebe tráfego (só imprime quando muda)
-labs/lab-05/watch-pod.sh $POD
-
-# Terminal 2 — eventos do Pod-alvo (probes falhando, restarts)
-kubectl -n ecommerce get events -w --field-selector involvedObject.name=$POD
-
-# Terminal 3 — carga contínua: 10 pedidos/s por 30 min (com retry do cliente usando a MESMA Idempotency-Key)
-scripts/k6.sh create-orders.js RATE=10 DURATION=30m
+labs/lab-05/qos.sh besteffort     # resources: {}                         -> BestEffort
+labs/lab-05/qos.sh burstable      # requests 100m/128Mi, limits 500m/512Mi -> Burstable
+labs/lab-05/qos.sh guaranteed     # requests == limits 500m/512Mi          -> Guaranteed
 ```
-
-O terminal 4 é onde você provoca as falhas. Antes de **cada** parte, marque o início da janela para contar as
-respostas da BFF só daquele trecho:
-
-```bash
-export T0=$(date -u +%FT%TZ)
-# ... falha ...
-labs/lab-05/count-responses.sh "$T0"
-```
-
-## 6. Falha provocada
-
-Execute as partes **na ordem** (A1 → A2 → B → C → D), no terminal 4.
-
-### Parte A1 — readiness falha, liveness OK
 
 ```mermaid
-sequenceDiagram
-    participant Op as Você (fault.sh)
-    participant Pod as Pod-alvo (Orders)
-    participant K as kubelet
-    participant ES as EndpointSlice
-    participant BFF
-    Op->>Pod: PUT /admin/health {"ready": false}
-    loop a cada 5 s
-        K->>Pod: GET /health/ready
-        Pod-->>K: 503 (forced_not_ready)
-        K->>Pod: GET /health/live
-        Pod-->>K: 200
-    end
-    K->>ES: 2 falhas: ready=false
-    BFF->>ES: quem recebe tráfego?
-    ES-->>BFF: só a outra réplica
-    Note over Pod: continua rodando, RESTARTS=0
+flowchart TD
+    R["resources do container"] --> Q1{"Algum request ou limit?"}
+    Q1 -- "não ({})" --> BE["BestEffort<br/>(perfil besteffort)"]
+    Q1 -- sim --> Q2{"requests == limits<br/>para CPU e memória?"}
+    Q2 -- "sim (500m/512Mi = 500m/512Mi)" --> G["Guaranteed<br/>(perfil guaranteed)"]
+    Q2 -- "não (100m/128Mi → 500m/512Mi)" --> BU["Burstable<br/>(perfil burstable, padrão da Inventory)"]
 ```
-
-```bash
-export T0=$(date -u +%FT%TZ)
-scripts/fault.sh orders not-ready $POD
-```
-
-Observe os terminais 1 e 2 por **2 minutos**. Depois:
-
-```bash
-labs/lab-05/count-responses.sh "$T0"
-scripts/fault.sh orders ready $POD     # desfaz; observe o terminal 1 por mais 10 s
-```
-
-### Parte A2 — processo travado
-
-```mermaid
-timeline
-    title freeze 90 na réplica que atende (valores medidos)
-    t=0 s : fault.sh freeze 90 : event loop bloqueado (time.sleep)
-    ~8 s : 1ª falha de liveness (timeout, não 503)
-    ~14 s : readiness falhou 2x : Pod sai do EndpointSlice : 504 param de aparecer na BFF
-    ~36 s : liveness falhou 3x : Killing (SIGTERM)
-    ~36–66 s : SIGTERM não é tratado (loop travado) : kubelet espera terminationGracePeriodSeconds 30 s : SIGKILL
-    ~66 s : Started : RESTARTS=1
-    ~73 s : startup e readiness OK : Pod volta ao EndpointSlice
-```
-
-Agora mire a réplica que **está atendendo** (a outra). Na A1 o cliente HTTP da BFF moveu suas conexões
-keep-alive para ela, então travá-la mostra o impacto real em quem chama:
-
-```bash
-export POD=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep -v "$POD")
-# reinicie os terminais 1 e 2 com o novo $POD
-
-export T0=$(date -u +%FT%TZ)
-scripts/fault.sh orders freeze 90 $POD
-```
-
-Observe por **~90 s** (até o Pod voltar a `READY=true`). Depois: `labs/lab-05/count-responses.sh "$T0"`.
-
-### Parte B — rollout sob carga (graceful shutdown)
-
-```mermaid
-sequenceDiagram
-    participant D as Deployment
-    participant N as Pod novo
-    participant O as Pod antigo
-    participant ES as EndpointSlice
-    D->>N: cria (maxSurge 1)
-    N->>ES: startup + readiness OK → entra
-    D->>O: encerra (maxUnavailable 0: só depois do novo estar pronto)
-    Note over O: SIGTERM → shutting_down=true
-    O-->>ES: readiness 503 → sai
-    Note over O: espera SHUTDOWN_DELAY_SECONDS = 5 s (ainda atendendo)
-    Note over O: uvicorn: até 20 s para terminar as requisições em andamento
-    O->>O: exit (bem antes do limite de 30 s)
-```
-
-```bash
-export T0=$(date -u +%FT%TZ)
-OLD=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api -o jsonpath='{.items[0].metadata.name}')
-kubectl -n ecommerce logs -f $OLD | grep --line-buffered SIGTERM &     # o log do Pod que vai encerrar
-kubectl -n ecommerce rollout restart deploy/orders-api
-kubectl -n ecommerce rollout status deploy/orders-api
-sleep 15; kill %1
-labs/lab-05/count-responses.sh "$T0"
-```
-
-### Parte C — deploy quebrado (startup)
-
-```mermaid
-flowchart TB
-    A["set env ORDERS_TABLE_NAME=tabela-que-nao-existe"] --> B["Deployment cria 1 Pod novo (maxSurge 1)"]
-    B --> C["warm-up: GetItem → AccessDeniedException"]
-    C --> D["/health/startup 503 + last_error<br/>/health/live 200<br/>/health/ready 503"]
-    D -- "~120 s (60 × 2 s)" --> E["Killing: failed startup probe → restart → CrashLoopBackOff"]
-    B -. "maxUnavailable 0" .-> F["2 Pods antigos seguem 1/1<br/>e atendem 100% do tráfego"]
-    E --> G["rollout status trava: rollout não avança"]
-    G --> H["rollout undo"]
-```
-
-Uma configuração errada: a Orders aponta para uma tabela que não existe (e que o Pod Identity dela não pode ler).
-
-```bash
-export T0=$(date -u +%FT%TZ)
-kubectl -n ecommerce set env deploy/orders-api ORDERS_TABLE_NAME=tabela-que-nao-existe
-sleep 20
-NEW=$(kubectl -n ecommerce get pod -l app.kubernetes.io/name=orders-api --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api
-kubectl -n ecommerce exec $NEW -- python -c "
-import urllib.request as u
-for p in ('startup', 'live', 'ready'):
-    try: r = u.urlopen('http://127.0.0.1:8080/health/' + p); print(p, r.status, r.read().decode()[:200])
-    except Exception as e: print(p, e.code, e.read().decode()[:250])"
-```
-
-Espere **~2 min** e confira de novo:
-
-```bash
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api
-kubectl -n ecommerce get events --field-selector involvedObject.name=$NEW | grep -E 'Unhealthy|Killing'
-kubectl -n ecommerce rollout status deploy/orders-api --timeout=10s      # trava: o rollout não avança
-labs/lab-05/count-responses.sh "$T0"
-```
-
-### Parte D — dependência fora do ar (anti-cascata)
-
-```mermaid
-flowchart LR
-    C["k6 / cliente"] --> BFF --> O["Orders (2 réplicas, Ready)"]
-    O -- "POST /inventory/reservations" --> I["Inventory: http-503"]
-    I -- "503" --> O
-    O --> CB["Circuit Breaker<br/>5 falhas → OPEN"]
-    CB --> R["503 DEPENDENCY_UNAVAILABLE<br/>+ Retry-After"]
-    R --> BFF --> C
-    O -. "readiness NÃO consulta a Inventory" .-> OK["Orders continua no EndpointSlice"]
-```
-
-```bash
-export T0=$(date -u +%FT%TZ)
-scripts/fault.sh inventory http-503
-sleep 45
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api
-scripts/fault.sh orders cb
-labs/lab-05/count-responses.sh "$T0"
-scripts/fault.sh all reset
-```
-
-## 7. Observações
-
-Valores medidos no cluster `rw-0001` (10 pedidos/s) durante a validação deste lab. Os seus tempos podem variar
-alguns segundos: o kubelet roda cada probe no próprio relógio, sem sincronia com o seu comando.
-
-### A1 — `not-ready`
-
-| Quando (após o comando) | Terminal 1 | Terminal 2 |
-|---|---|---|
-| ~10 s | `READY=false  RESTARTS=0  recebe-tráfego=não` | `Readiness probe failed: HTTP probe failed with statuscode: 503` |
-| 2 min depois | **igual**: continua fora, `RESTARTS=0` | nenhum `Killing` |
-| ~5 s após `ready` | `READY=true  recebe-tráfego=true` | — |
-
-Respostas da BFF na janela: **815 × `201`, 0 erros** — a outra réplica atendeu tudo.
-
-### A2 — `freeze 90`
-
-| Quando (após o comando) | Terminal 1 | Terminal 2 |
-|---|---|---|
-| ~8 s | — | `Liveness probe failed: ... context deadline exceeded (Client.Timeout exceeded while awaiting headers)` (timeout, **não** 503) |
-| ~14 s | `READY=false  recebe-tráfego=não` | `Readiness probe failed: ... context deadline exceeded` |
-| ~36 s | — | `Killing: Container app failed liveness probe, will be restarted` |
-| ~66 s | `RESTARTS=1` | `Started` (30 s depois do `Killing`, veja a seção 8) |
-| ~73 s | `READY=true  recebe-tráfego=true` | — |
-
-O restart acontece **antes** dos 90 s do `freeze` acabarem: foi a liveness que destravou a réplica.
-
-Respostas da BFF na janela: **1160 × `201`, 6 × `504`, 2 × `409`** (de 1168).
-- `504 UPSTREAM_TIMEOUT`: pedidos que já estavam na réplica quando ela travou esperaram os 3 s de timeout da BFF.
-  Pararam quando o Pod saiu do EndpointSlice.
-- `409 ORDER_IN_PROGRESS`: o k6 repetiu esses pedidos com a **mesma** `Idempotency-Key`, mas o lease ainda estava
-  com a réplica travada. A repetição seguinte (depois do lease) foi confirmada.
-- Se você congelar a réplica para a qual a BFF **não** tem conexões abertas (a da A1), os erros podem ser **zero**:
-  o impacto depende de quantas conexões keep-alive apontavam para ela.
-
-### B — rollout
-
-- Log do Pod antigo: `SIGTERM recebido: readiness=false, aguardando 5.0s antes de encerrar`.
-- `maxSurge: 1, maxUnavailable: 0`: o Pod novo fica `1/1` **antes** de um antigo ser encerrado.
-- Respostas da BFF: **0 erros** (2 rodadas: 288 e 277 × `201`).
-
-### C — deploy quebrado
-
-- Pod novo `0/1`; os 2 antigos continuam `1/1`.
-- `/health/startup` → `503` com
-  `"last_error": "DynamoUnavailable: AccessDeniedException: ... is not authorized to perform: dynamodb:GetItem ..."`.
-- `/health/live` → `200` (o processo está vivo; reiniciar não conserta configuração errada).
-- `/health/ready` → `503`.
-- ~2 min depois: `Killing: Container app failed startup probe, will be restarted` e `RESTARTS 1`. A cada ciclo de
-  120 s ele reinicia de novo, com back-off crescente entre as tentativas (`CrashLoopBackOff` aparece entre elas).
-- `rollout status` → `timed out waiting for the condition`: o rollout não avança.
-- Respostas da BFF: **2121 × `201`, 0 erros** — o Pod quebrado nunca recebeu tráfego.
-
-### D — Inventory em 503
-
-- Orders: 2 réplicas `1/1`, `RESTARTS 0`, **nenhum** evento de probe.
-- Circuit Breaker: `OPEN` / `HALF_OPEN` nas réplicas (`consecutive_failures: 5`).
-- Respostas da BFF em 45 s: **919 × `503`, 37 × `201`** — `503 DEPENDENCY_UNAVAILABLE` com `Retry-After`, um erro
-  de **negócio** que o cliente sabe tratar.
-
-## 8. Explicação técnica
-
-- **Readiness controla tráfego; liveness controla o processo.** Na A1 só a readiness falha: o EndpointSlice marca o
-  Pod como não pronto e kube-proxy/NLB param de enviar requisições, mas o container segue rodando. Na A2 as duas
-  falham — primeiro a réplica é isolada (readiness: 2 × 5 s), depois reiniciada (liveness: 3 × 10 s).
-- **Os 30 s entre `Killing` e `Started` na A2:** o kubelet envia `SIGTERM`, mas o processo está travado e não
-  consegue tratá-lo (o handler roda no próprio event loop). O kubelet espera `terminationGracePeriodSeconds: 30` e
-  então envia `SIGKILL`. Um processo saudável encerraria em ~5 s (parte B).
-- **Graceful shutdown (parte B):** três tempos atuam no encerramento:
-
-  | Tempo | Onde | Papel |
-  |---|---|---|
-  | `SHUTDOWN_DELAY_SECONDS` = 5 s | aplicação (`workshop_common/server.py`) | após o `SIGTERM`, a readiness responde 503 e o processo **espera, ainda atendendo**, até sair dos endpoints |
-  | `timeout_graceful_shutdown` = 20 s | uvicorn | termina as requisições em andamento sem aceitar novas |
-  | `terminationGracePeriodSeconds` = 30 s | Deployment | limite total; depois disso, `SIGKILL` |
-
-  Em produção é comum fazer a espera com um `preStop` hook (`lifecycle.preStop.sleep`), no manifesto, em vez de
-  na aplicação — o efeito é o mesmo.
-- **Startup separa "lento para subir" de "travado".** O warm-up da Orders faz um `GetItem` no DynamoDB (valida Pod
-  Identity, policy e tabela) e repete com backoff. Enquanto ele não passa, a startup responde 503 com `last_error`
-  e as outras probes nem rodam. A liveness responde 200 o tempo todo: sem a startup probe, um warm-up lento seria
-  morto pela liveness antes de terminar.
-- **`maxUnavailable: 0` + readiness = deploy seguro.** O Deployment só encerra um Pod antigo quando um novo fica
-  pronto. Se o novo nunca fica pronto (parte C), o rollout para e o serviço continua no ar.
-- **Readiness não verifica dependências (parte D).** Se verificasse a Inventory, as **duas** réplicas da Orders
-  sairiam do Service ao mesmo tempo, e a BFF passaria a receber erro de conexão (cascata). A falha da dependência
-  é tratada no lugar certo: timeout, retry e Circuit Breaker na chamada (LAB 04).
-- **Nesta implementação, readiness e liveness só divergem em dois casos:** o shutdown (os 5 s do `SIGTERM`) e o
-  `not-ready` do lab. "Ainda não iniciou" já é coberto pela startup probe. Manter as duas rotas separadas custa
-  zero e deixa a readiness pronta para motivos próprios **da réplica** (warm-up, manutenção, saturação local).
-## 9. Correção
-
-Não há bug a corrigir: as falhas foram provocadas. A "correção" de cada parte é desfazer a causa:
-
-```bash
-scripts/fault.sh orders ready            # A1 (todas as réplicas)
-# A2: nada — a liveness já reiniciou a réplica
-kubectl -n ecommerce rollout undo deploy/orders-api    # C: volta para a revisão anterior (sem ORDERS_TABLE_NAME)
-scripts/fault.sh all reset               # D: remove a falha da Inventory e reseta os Circuit Breakers
-```
-
-## 10. Validação
-
-```bash
-kubectl -n ecommerce get pods -l app.kubernetes.io/name=orders-api        # 2 réplicas 1/1
-kubectl -n ecommerce get deploy orders-api -o jsonpath='{.spec.template.spec.containers[0].env[*].name}'; echo
-# não deve conter ORDERS_TABLE_NAME
-scripts/fault.sh orders health           # forced_not_ready=false em todos os Pods
-scripts/fault.sh orders cb               # CLOSED (após ~15 s sem falhas)
-```
-
-Resumo dos cenários (valores medidos no `rw-0001`, 10 pedidos/s):
 
 | Cenário | Ação | Comportamento esperado | Como verificar |
 |---|---|---|---|
-| A1 — readiness falha | `fault.sh orders not-ready $POD` | ~10 s: fora do tráfego; 2 min sem restart; volta ~5 s após `ready` | `watch-pod.sh`: `READY=false RESTARTS=0 recebe-tráfego=não`; BFF 0 erros |
-| A2 — processo travado | `fault.sh orders freeze 90 $POD` | ~14 s fora do tráfego; ~36 s `Killing` (liveness); ~66 s `Started`; ~73 s pronto | eventos `Liveness probe failed ... context deadline exceeded`, `RESTARTS=1`; BFF poucos `504`/`409` (6 e 2 de 1168) |
-| B — rollout | `rollout restart deploy/orders-api` | Pod antigo sai do Service antes de parar; novo pronto antes do antigo sair | log `SIGTERM recebido: readiness=false, aguardando 5.0s`; BFF 0 erros |
-| C — deploy quebrado | `set env ORDERS_TABLE_NAME=tabela-que-nao-existe` | Pod novo nunca `1/1`; restart ~120 s; rollout travado; antigos atendem | `/health/startup` 503 com `AccessDeniedException`; `rollout status` timeout; BFF 0 erros |
-| D — Inventory fora | `fault.sh inventory http-503` | Orders segue `1/1`, CB `OPEN`/`HALF_OPEN`, erro de negócio | `fault.sh orders cb`; BFF `503` (919 de 956) |
+| Sem resources | `qos.sh besteffort` | Pod recriado (`Recreate`) como `BestEffort`; estoque em memória reiniciado | `kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api -o jsonpath='{.items[0].status.qosClass}'` |
+| Request < limit | `qos.sh burstable` | `Burstable` (100m/128Mi → 500m/512Mi) | idem |
+| Request = limit | `qos.sh guaranteed` | `Guaranteed` (500m/512Mi) | idem |
+
+Os perfis estão em `kubernetes/labs/qos/inventory-*.patch.json` (JSON patch sobre `containers[0].resources`).
+A Inventory API usa `strategy: Recreate` (réplica única com estado em memória), então cada troca de perfil
+**recria o Pod** — e reinicia o estoque/reservas em memória.
+
+Os dois experimentos seguintes batem no **limit** do container, mas o resultado é oposto porque CPU é comprimível
+e memória não:
+
+```mermaid
+flowchart LR
+    subgraph CPU["A.2 — cpu-burn 2 (~2 cores) contra limit 500m"]
+        direction TB
+        a1["Processo pede mais CPU"] --> a2["CFS: cota cpu.max 50000/100000 esgotada"]
+        a2 --> a3["Processo pausado até o próximo período de 100 ms"]
+        a3 --> a4["nr_throttled ↑ · latência ↑ · RESTARTS igual"]
+    end
+    subgraph MEM["A.3 — memory 700 contra limit 512Mi"]
+        direction TB
+        b1["Ballast cresce 16 MiB / 250 ms"] --> b2["cgroup atinge memory.max (512Mi)"]
+        b2 --> b3["Kernel mata o processo (OOM killer)"]
+        b3 --> b4["OOMKilled · RESTARTS +1 · estoque/reservas zerados"]
+    end
+```
+
+#### A.2 CPU throttling (perfil com limit de CPU)
+
+```bash
+# T1 — perfil Burstable (limit 500m) e 2 processos consumindo 1 core cada
+labs/lab-05/qos.sh burstable
+scripts/fault.sh inventory cpu-burn 2
+
+# T2 — contadores do cgroup v2 a cada 5s
+labs/lab-05/cpu-stat.sh
+```
+
+Saída esperada do `cpu-stat.sh`:
+
+```text
+10:41:05 cpu.max=[50000 100000] nr_periods 1200 nr_throttled 1150 throttled_usec 61234567
+```
+
+`cpu.max = 50000 100000` → 50 ms de CPU a cada período de 100 ms = **500m**. Com demanda de ~2 cores,
+praticamente todo período é throttled.
+
+Meça o efeito na latência pelo caminho real do pedido (a NetworkPolicy só permite Orders → Inventory):
+
+```bash
+# T3 — carga leve de pedidos durante o throttling
+scripts/k6.sh create-orders.js RATE=5 DURATION=2m
+```
+
+Compare `http_req_duration p(95)` com e sem `cpu-burn`. No HyperDX:
+
+- **Metrics** → `container.cpu.throttled_time` (counter, segundos) e `container.cpu.throttled_periods`,
+  filtro `ServiceName = inventory-api`;
+- **Metrics** → `k8s.pod.cpu_limit_utilization` (kubeletstats) próximo de 1.0;
+- **Traces** → spans `POST /inventory/reservations` mais lentos.
+
+Desligue o stress:
+
+```bash
+scripts/fault.sh inventory cpu-burn 0
+```
+
+#### A.3 OOMKilled (limit de memória)
+
+```bash
+labs/lab-05/qos.sh burstable                 # limit 512Mi (mesmo resultado com guaranteed)
+scripts/fault.sh inventory memory 700        # ballast cresce 16 MiB a cada 250 ms até 700 MiB
+kubectl -n ecommerce get pods -l app.kubernetes.io/name=inventory-api -w
+```
+
+Após ~10 s o contador `RESTARTS` incrementa. Confirme o motivo:
+
+```bash
+kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api \
+  -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated.reason}{"\n"}'
+# OOMKilled
+kubectl -n ecommerce describe pod -l app.kubernetes.io/name=inventory-api | grep -A5 "Last State"
+```
+
+> O container reinicia com a configuração de falhas **padrão** (ballast = 0), então não entra em loop.
+
+**Consequência de negócio:** o estoque e as reservas vivem em memória. Após o OOMKilled:
+
+```bash
+scripts/fault.sh inventory state      # reservations_total volta a 0, estoque volta ao inicial
+```
+
+Pedidos já `CONFIRMED` no DynamoDB continuam lá, mas a Inventory "esqueceu" as reservas. Essa é a
+**limitação documentada do MVP** (sem durabilidade das reservas após restart) — não um bug escondido.
+
+#### A.4 BestEffort + vizinho barulhento (contenção)
+
+```bash
+labs/lab-05/qos.sh besteffort
+kubectl apply -f kubernetes/labs/qos/noisy-neighbor.yaml        # 2x `yes` no MESMO nó da Inventory (podAffinity), auto-encerra em 10 min
+kubectl -n loadtest get pod noisy-neighbor -o wide
+scripts/k6.sh create-orders.js RATE=5 DURATION=2m
+kubectl top pods -A --sort-by=cpu | head
+```
+
+Sem requests, a Inventory recebe o **peso mínimo de CPU** (`cpu.weight` mínimo para BestEffort) e disputa CPU
+com o vizinho em desvantagem. Observe a latência p95 e os spans de `inventory-api` no HyperDX. Depois:
+
+```bash
+kubectl -n loadtest delete pod noisy-neighbor
+```
+
+**Resumo da Parte A**
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| CPU acima do limit | `qos.sh burstable` + `fault.sh inventory cpu-burn 2` | Throttling em quase todo período; Pod **não** reinicia; p95 dos pedidos sobe | `labs/lab-05/cpu-stat.sh` (`nr_throttled` ≈ `nr_periods`); `container.cpu.throttled_time` no HyperDX; `RESTARTS` igual |
+| Memória acima do limit | `qos.sh burstable` + `fault.sh inventory memory 700` | `OOMKilled` em ~10 s; container reinicia sem a falha; estoque e reservas voltam ao inicial | `lastState.terminated.reason` = `OOMKilled`; `RESTARTS +1`; `fault.sh inventory state` (`reservations_total` = 0) |
+| BestEffort + vizinho barulhento | `qos.sh besteffort` + `noisy-neighbor.yaml` | Inventory disputa CPU com peso mínimo; latência maior, sem restart | `kubectl top pods -A --sort-by=cpu`; p95 do k6; spans `inventory-api` |
+
+### Parte B — PriorityClass & Preemption (sequência determinística)
+
+```bash
+# B.1 — ponto de partida limpo
+scripts/reset.sh
+
+# B.2 — Inventory Guaranteed (500m). A vítima precisa liberar >= 250m (request de 1 Pod da Orders);
+#        com o perfil Burstable (100m) + 100m de folga, a preempção NÃO resolveria e o scheduler não preemptaria.
+labs/lab-05/qos.sh guaranteed
+
+# B.3 — impedir que o Cluster Autoscaler adicione nós ANTES de observarmos a preempção
+kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=0
+
+# B.4 — ANTI-PATTERN INTENCIONAL: dependência transacional com prioridade baixa
+kubectl -n ecommerce patch deploy inventory-api --patch-file kubernetes/labs/priority/inventory-low-priority.patch.yaml
+kubectl -n ecommerce rollout status deploy/inventory-api
+
+# B.5 — ocupar a CPU livre dos nós apps com ballasts de prioridade critical-services (deixa 100m livres por nó)
+python3 labs/lab-05/fill-capacity.py --slack 100
+kubectl -n loadtest get pods -l app.kubernetes.io/name=capacity-ballast -o wide
+
+# B.6 — remover o HPA (senão ele "desfaz" o scale manual) e escalar a Orders API em +2 réplicas
+kubectl -n ecommerce delete hpa orders-api
+CURRENT=$(kubectl -n ecommerce get deploy orders-api -o jsonpath='{.spec.replicas}')
+kubectl -n ecommerce scale deploy orders-api --replicas=$((CURRENT + 2))
+```
+
+Em paralelo (T3), gere pedidos durante todo o experimento:
+
+```bash
+scripts/k6.sh create-orders.js RATE=5 DURATION=4m
+```
+
+E observe (T2):
+
+```bash
+kubectl get events -n ecommerce --sort-by=.lastTimestamp -w | grep -E "Preempted|FailedScheduling|Scheduled"
+# outro terminal:
+kubectl -n ecommerce get pods -o wide -w
+labs/lab-07/watch-cb.sh        # estado do Circuit Breaker por réplica da Orders
+```
+
+Sequência esperada da Parte B (2 nós `apps`, CA desligado, ballasts deixando 100m livres por nó):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as kubectl scale (+2)
+    participant S as kube-scheduler
+    participant NA as Nó A (Inventory low-priority, Guaranteed 500m)
+    participant NB as Nó B (só ballasts critical-services)
+    participant O as Orders API
+    U->>S: 2 novos Pods orders-api (critical-services 1000, request 250m)
+    S-->>S: Pending — "Insufficient cpu" (100m livres por nó)
+    S->>NA: Preemption: remove a Inventory (prioridade 100 < 1000)
+    NA-->>S: libera 500m → Orders #3 agendada no nó A
+    S-->>S: Inventory recriada pelo ReplicaSet fica Pending (não pode preemptar ninguém)
+    S-->>S: Orders #4 Pending — nó A violaria maxSkew 1, nó B sem vítimas
+    O->>O: pré-consulta/reserva sem endpoints → retries → Circuit Breaker OPEN
+    O-->>U: POST /orders → 503 DEPENDENCY_UNAVAILABLE (reason=circuit_open)
+```
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Dependência com prioridade baixa | B.2 + B.4 (Guaranteed 500m + `low-priority-services`) | Inventory `Running`, `PRIORITY` 100, `QOS` Guaranteed | `kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,QOS:.status.qosClass,PRIORITY:.spec.priorityClassName` |
+| Cluster sem folga | B.3 (CA = 0) + B.5 (`fill-capacity.py --slack 100`) | Ballasts `Running` nos 2 nós `apps`; ~100m livres por nó | `kubectl -n loadtest get pods -l app.kubernetes.io/name=capacity-ballast -o wide` |
+| Orders +2 réplicas | B.6 | Evento `Preempted` na Inventory; uma Orders nova agendada no nó dela | `kubectl get events -n ecommerce --field-selector reason=Preempted` |
+| Vítima não reagenda | — | Inventory nova `Pending` (`Insufficient cpu`; nenhuma vítima de prioridade menor) | `kubectl -n ecommerce get pods -l app.kubernetes.io/name=inventory-api` |
+| Spread impede empilhar | — | 4ª Orders `Pending`: *"didn't match pod topology spread constraints … Preemption is not helpful"* | `kubectl -n ecommerce describe pod <orders Pending>` |
+| Impacto no negócio | k6 em T3 | `POST /orders` `201` → ~0%; `503 DEPENDENCY_UNAVAILABLE`; CB `OPEN` em cada réplica | saída do k6; `labs/lab-07/watch-cb.sh`; `circuit_breaker.state` = 2 no HyperDX |
+
+## 6. Falha provocada
+
+- **Parte A:** CPU throttling (`cpu-burn 2` contra limit 500m), OOMKilled (`memory 700` contra limit 512Mi),
+  contenção de CPU (BestEffort + `noisy-neighbor`).
+- **Parte B:** falta de capacidade de scheduling para Pods `critical-services` com a dependência transacional
+  configurada como `low-priority-services` e o Cluster Autoscaler desligado.
+
+## 7. Observações
+
+**Parte A**
+
+| Experimento | Onde observar | O que esperar |
+|---|---|---|
+| Throttling | `cpu-stat.sh`, métrica `container.cpu.throttled_time` | `nr_throttled` crescendo quase 1:1 com `nr_periods`; Pod **não** reinicia; latência sobe |
+| OOMKilled | `lastState.terminated.reason`, evento `BackOff`/restart, `k8s.container.restarts` | Container morto pelo kernel, `RESTARTS+1`, estado em memória perdido |
+| Contenção BestEffort | `kubectl top`, p95 k6, spans `inventory-api` | Latência maior; nenhuma garantia de CPU |
+
+**Parte B** — linha do tempo típica:
+
+1. Novos Pods `orders-api` ficam `Pending` (`FailedScheduling: Insufficient cpu`).
+2. O scheduler identifica a Inventory (prioridade 100) como vítima no nó onde ela roda: evento
+   `Preempted` — *"Preempted by pod … on node …"*. O Pod da Orders é agendado nesse nó (`nominatedNodeName`).
+3. A Inventory é recriada pelo ReplicaSet e fica `Pending`: não há espaço e ela **não pode** preemptar ninguém
+   (todos os demais são `critical-services` ou `system-*`).
+4. O outro novo Pod da Orders continua `Pending`. O topology spread da Orders (`maxSkew: 1` por nó, LAB 04) exige
+   que ele vá para o **outro** nó, que está cheio de ballasts `critical-services` (sem vítimas):
+   *"0/3 nodes are available: 1 Insufficient cpu, 1 node(s) didn't match pod topology spread constraints … preemption:
+   … Preemption is not helpful for scheduling"*.
+5. Os pedidos começam a falhar: a pré-consulta/reserva da Inventory falha (sem endpoints → erro de transporte) →
+   retries → **Circuit Breaker OPEN** em cada réplica → `503 DEPENDENCY_UNAVAILABLE` com `reason=circuit_open`.
+   O k6 mostra `POST /orders 201` caindo para ~0%.
+
+No HyperDX:
+
+- **Logs** (source Logs): eventos Kubernetes coletados pelo gateway (`k8sobjects`) — busque `Preempted` e
+  `FailedScheduling`;
+- **Logs**: `ServiceName:"orders-api" Body:"Circuit breaker transition"` e `Body:"Inventory API indisponível"`;
+- **Metrics**: `k8s.pod.phase` (Pending = 1), `circuit_breaker.state` (2 = OPEN), `orders.failed` por `reason`.
+
+## 8. Explicação técnica
+
+**QoSClass** é derivada automaticamente dos `resources`:
+
+| QoS | Regra | `oom_score_adj` | Eviction por pressão do nó |
+|---|---|---|---|
+| BestEffort | nenhum request/limit | 1000 (primeiro a morrer) | primeiro candidato |
+| Burstable | algum request, não todos iguais aos limits | 2–999 (proporcional) | quem usa acima do request primeiro |
+| Guaranteed | requests == limits para CPU e memória em todos os containers | -997 | último candidato |
+
+Três mecanismos **diferentes**:
+
+- **CPU throttling** — o CFS aplica a cota `cpu.max` (limit). O processo é *pausado* até o próximo período;
+  nada é morto. CPU é um recurso **comprimível**.
+- **OOMKilled** — o uso de memória do cgroup do container atinge `memory.max` (limit) e o **kernel** mata o
+  processo. Acontece mesmo com o nó folgado. Memória é **incompressível**.
+- **Eviction** — o **kubelet** detecta pressão no **nó** (ex.: `memory.available` abaixo do threshold) e remove Pods
+  inteiros, ordenando por uso acima do request, prioridade e QoS. Pode acontecer sem nenhum limit atingido.
+
+**PriorityClass** age no **scheduler**: quando um Pod não cabe, o scheduler procura nós onde remover Pods de
+prioridade **estritamente menor** libere recursos suficientes (preemption). QoS não entra nessa conta — por isso
+um Pod `Guaranteed` de prioridade 100 foi removido. Prioridade **igual** nunca preempta (por isso os ballasts
+`critical-services` e as outras réplicas da Orders ficaram intocados).
+
+O perfil Guaranteed (500m) foi necessário para a preempção acontecer: a vítima precisa liberar recursos
+suficientes para o Pod pendente (250m da Orders). Com 100m livres + 100m da Inventory Burstable = 200m < 250m,
+o scheduler não teria vítima válida.
+
+| Pergunta | Quem responde |
+|---|---|
+| Quem sofre primeiro quando o **nó** está sem CPU/memória? | QoS (requests/limits) |
+| Quem é **agendado** primeiro / quem é **removido** quando falta capacidade de scheduling? | PriorityClass |
+
+O anti-pattern: a prioridade deve refletir a **criticidade do fluxo de negócio**, não a "importância percebida"
+do serviço. Uma dependência síncrona do caminho crítico tem, no mínimo, a mesma prioridade de quem a chama.
+
+## 9. Correção
+
+```bash
+# 1. Dependência transacional com a mesma prioridade do caminho crítico
+kubectl -n ecommerce patch deploy inventory-api --patch-file kubernetes/labs/priority/inventory-restore-priority.patch.yaml
+
+# 2. Capacidade: reativar o Cluster Autoscaler
+kubectl -n kube-system scale deploy -l app.kubernetes.io/name=aws-cluster-autoscaler --replicas=1
+```
+
+O novo Pod da Inventory (prioridade 1000) **não** consegue preemptar ninguém (todos têm prioridade igual ou
+maior) — ele fica `Pending` e isso dispara o **Cluster Autoscaler**, que adiciona um nó `apps` (2–4 min).
+A Inventory é agendada, o Circuit Breaker passa por `HALF_OPEN` → `CLOSED`, e os pedidos voltam a `201`.
+
+```bash
+kubectl -n kube-system logs deploy/cluster-autoscaler-aws-cluster-autoscaler --since=10m | grep -iE "scale-up|ScaleUp"
+kubectl get nodes -l workload=apps -w
+```
+
+Correção de QoS (Parte A): manter a Inventory **Burstable** com requests realistas (ou Guaranteed se a latência
+for crítica), limit de memória dimensionado pelo uso real + margem, e **não** depender de estado em memória em
+produção (fase 2: estado compartilhado/durável).
+
+## 10. Validação
+
+| Cenário | Ação | Comportamento esperado | Como verificar |
+|---|---|---|---|
+| Prioridade corrigida | patch `inventory-restore-priority` (seção 9) | Inventory nova com prioridade 1000 fica `Pending` (não preempta prioridade igual) | `kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api -o wide` |
+| Capacidade restaurada | CA = 1 (seção 9) | CA adiciona um nó `apps` em 2–4 min; Inventory `Running` | `kubectl get nodes -l workload=apps -w`; logs do CA (`scale-up`) |
+| Recuperação do fluxo | — | CB `HALF_OPEN` → `CLOSED` em todas as réplicas; pedidos voltam a `201` | `scripts/fault.sh orders cb`; k6 com `http_req_failed < 5%` |
+| Evidência da preempção | — | Evento `Preempted` da Inventory registrado | `kubectl get events -n ecommerce --field-selector reason=Preempted` |
+
+```mermaid
+flowchart LR
+    F1["Inventory → critical-services (1000)"] --> F2["Pod novo Pending<br/>(não preempta prioridade igual)"]
+    F2 --> F3["Cluster Autoscaler (replicas=1)<br/>cria nó apps em 2–4 min"]
+    F3 --> F4["Inventory Running"] --> F5["CB HALF_OPEN → CLOSED"] --> F6["POST /orders 201"]
+```
+
+```bash
+kubectl -n ecommerce get pod -l app.kubernetes.io/name=inventory-api \
+  -o custom-columns=POD:.metadata.name,STATUS:.status.phase,QOS:.status.qosClass,PRIORITY:.spec.priority
+# STATUS=Running  PRIORITY=1000
+kubectl get events -n ecommerce --field-selector reason=Preempted
+scripts/fault.sh orders cb             # todas as réplicas: "state": "CLOSED"
+scripts/k6.sh create-orders.js RATE=5 DURATION=1m   # thresholds OK (http_req_failed < 5%)
+```
 
 ## 11. Challenge
 
-1. Rode `scripts/fault.sh orders not-ready` em **todas** as réplicas (um Pod por vez). O que a BFF responde? Por
-   que isso é exatamente o que a decisão "readiness não verifica dependências" evita?
-2. Na parte C, quanto tempo um deploy quebrado leva para ser detectado? Que parâmetro da startup probe você
-   mudaria para detectar mais cedo, e qual o risco de um warm-up legítimo (ex.: DynamoDB lento) ser cortado?
-3. Troque o `SHUTDOWN_DELAY_SECONDS` da aplicação por um `preStop` hook no Deployment da Orders
-   (`lifecycle.preStop.sleep.seconds: 5`) e repita a parte B. O resultado muda? Onde a configuração fica mais
-   visível para quem opera o cluster? (Ao terminar: `kubectl -n ecommerce rollout undo deploy/orders-api`.)
+1. **Eviction controlada (opcional):** com `labs/lab-05/qos.sh besteffort`, eleve a pressão de memória no nó:
+   `scripts/fault.sh inventory memory 2048` (teto `INVENTORY_MEMORY_STRESS_MAX_MB=2048` — a carga é limitada por
+   design). Repita junto com `kubectl apply -f kubernetes/labs/qos/noisy-neighbor.yaml`. Observe `kubectl describe node`
+   (condição `MemoryPressure`) e os eventos `Evicted`. Discuta: em nós com pouca memória livre, o **OOM killer do
+   kernel** pode agir antes da eviction do kubelet (que avalia a cada ~10 s); como o `oom_score_adj` do BestEffort é
+   1000, ele morre primeiro de qualquer forma. Com 2048 MiB num `m6i.large` a eviction pode **não** ocorrer — explique
+   por quê (allocatable × uso real × threshold `memory.available`).
+2. Por que o HPA precisou ser removido na Parte B? O que aconteceria com `minReplicas` maior que a capacidade?
+3. Qual seria o efeito de `preemptionPolicy: Never` na `critical-services`?
+4. Proponha um `PodDisruptionBudget` para a Inventory (fase 2). Ele impediria a preempção? (Dica: PDB é
+   respeitado em *best effort* pelo scheduler na preempção.)
 
 ## 12. Critérios de sucesso
 
-- [ ] A1: o Pod ficou fora do tráfego por 2 min com `RESTARTS=0` e 0 erros na BFF.
-- [ ] A2: o Pod saiu do tráfego **antes** de ser reiniciado, e o restart veio antes do fim do `freeze`.
-- [ ] B: rollout com 0 erros e o log `SIGTERM recebido` no Pod antigo.
-- [ ] C: o Pod novo nunca ficou pronto, o `last_error` explicou a causa e a BFF teve 0 erros.
-- [ ] D: a Orders continuou `1/1` com a Inventory fora, e o erro chegou como `503 DEPENDENCY_UNAVAILABLE`.
-- [ ] Você sabe explicar por que a liveness **não** deve verificar o DynamoDB nem a Inventory.
+- [ ] Os três perfis produziram `BestEffort`, `Burstable` e `Guaranteed` em `.status.qosClass`.
+- [ ] `nr_throttled` cresceu com `cpu-burn 2` e o Pod **não** reiniciou.
+- [ ] `lastState.terminated.reason = OOMKilled` com `memory 700` e o estado em memória foi perdido.
+- [ ] Evento `Preempted` para a Inventory API registrado, com a Orders agendada no lugar.
+- [ ] Pedidos falharam com `503 DEPENDENCY_UNAVAILABLE` e Circuit Breaker `OPEN` durante a preempção.
+- [ ] Após a correção: Inventory `Running` com prioridade 1000, CB `CLOSED`, pedidos `201`.
+- [ ] O aluno explica a diferença entre throttling, OOMKilled, eviction e preemption.
 
 ## 13. Reset
 
 ```bash
-kubectl -n loadtest delete jobs -l app.kubernetes.io/name=k6     # se o k6 ainda estiver rodando
-scripts/reset.sh       # remove overrides (ORDERS_TABLE_NAME etc.) e falhas
+kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast --ignore-not-found
+kubectl -n loadtest delete pod noisy-neighbor --ignore-not-found
+scripts/reset.sh        # perfil Burstable, Inventory de volta a critical-services, reaplica HPA, CA=1, limpa falhas
+kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,QOS:.status.qosClass,PRIORITY:.spec.priorityClassName
 ```
+
+Nós extras criados pelo Cluster Autoscaler são removidos automaticamente após ~2 min ociosos
+(`scale-down-unneeded-time=2m`).

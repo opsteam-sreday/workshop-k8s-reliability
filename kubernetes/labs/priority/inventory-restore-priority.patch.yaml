@@ -1,4 +1,4 @@
-# Correção do LAB 03: dependência transacional recebe a mesma prioridade do caminho crítico.
+# Correção do LAB 05: dependência transacional recebe a mesma prioridade do caminho crítico.
 spec:
   template:
     spec:

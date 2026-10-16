@@ -76,7 +76,7 @@ run "Criar o namespace observability" \
   "Namespace do ClickStack, dos OpenTelemetry Collectors e do webhook de alertas (dry-run + apply = idempotente)." \
   bash -c 'kubectl create namespace observability --dry-run=client -o yaml | kubectl apply -f -'
 run "Criar as PriorityClasses" \
-  "critical-services (1000) para BFF/Orders/Inventory e low-priority-services (100), usada no anti-pattern do LAB 03. Elas definem quem é agendado primeiro e quem pode ser preemptado quando falta capacidade." \
+  "critical-services (1000) para BFF/Orders/Inventory e low-priority-services (100), usada no anti-pattern do LAB 05. Elas definem quem é agendado primeiro e quem pode ser preemptado quando falta capacidade." \
   kubectl apply -f "$REPO_ROOT/kubernetes/platform/priorityclasses.yaml"
 
 # ---------------------------------------------------------------- 4. Helm repos

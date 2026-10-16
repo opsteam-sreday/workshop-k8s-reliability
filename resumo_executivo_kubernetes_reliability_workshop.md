@@ -47,7 +47,7 @@ Provisionar o EKS, implantar as três APIs e criar o primeiro pedido. Validar a 
 
 **Duração sugerida:** 90 minutos.
 
-## LAB 02 — CPU Stress & Autoscaling
+## LAB 06 — CPU Stress & Autoscaling
 
 **Tema:** Escalabilidade e capacidade.
 
@@ -57,7 +57,7 @@ Gerar sobrecarga controlada de CPU na Orders API, observar o HPA criando novas r
 
 **Duração sugerida:** 75 minutos.
 
-## LAB 03 — QoS & PriorityClass
+## LAB 05 — QoS & PriorityClass
 
 **Tema:** Contenção de recursos e prioridades.
 
@@ -67,7 +67,7 @@ Testar as classes **BestEffort, Burstable e Guaranteed** na Inventory API. Simul
 
 **Duração sugerida:** 60 minutos.
 
-## LAB 04 — Circuit Breaker & Failure Recovery
+## LAB 07 — Circuit Breaker & Failure Recovery
 
 **Tema:** Resiliência de aplicações distribuídas.
 
@@ -94,9 +94,9 @@ Investigar requisições ponta a ponta usando OpenTelemetry e HyperDX. Examinar 
 | Laboratório | Duração |
 |---|---:|
 | LAB 01 — Plataforma transacional | 90 min |
-| LAB 02 — Autoscaling | 75 min |
-| LAB 03 — QoS e prioridades | 60 min |
-| LAB 04 — Circuit Breaker | 60 min |
+| LAB 06 — Autoscaling | 75 min |
+| LAB 05 — QoS e prioridades | 60 min |
+| LAB 07 — Circuit Breaker | 60 min |
 | LAB X1 — ClickStack e alertas | 75 min |
 | **Total hands-on** | **360 min (6 horas)** |
 

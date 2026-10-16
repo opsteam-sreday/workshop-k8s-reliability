@@ -19,12 +19,12 @@ spec:
       automountServiceAccountToken: false
       # Dependência transacional da Orders API: mesma prioridade do caminho crítico.
       # Sem PriorityClass (prioridade 0), o scale-out da Orders (1000) PREEMPTA a Inventory —
-      # comportamento observado na validação real do LAB 02. O LAB 03 aplica o anti-pattern
+      # comportamento observado na validação real do LAB 06. O LAB 05 aplica o anti-pattern
       # (low-priority-services) de propósito.
       priorityClassName: critical-services
       terminationGracePeriodSeconds: 30
       nodeSelector: {workload: apps}
-      # No máximo 1 réplica de diferença entre os nós apps: perder um nó não leva todas as réplicas (LAB 07, parte E).
+      # No máximo 1 réplica de diferença entre os nós apps: perder um nó não leva todas as réplicas (LAB 04, parte E).
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname

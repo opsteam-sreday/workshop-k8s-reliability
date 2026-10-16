@@ -1,4 +1,4 @@
-# LAB 07 B2 — podAntiAffinity REQUIRED por nó, contando só o ReplicaSet atual (matchLabelKeys): no máximo 1
+# LAB 04 B2 — podAntiAffinity REQUIRED por nó, contando só o ReplicaSet atual (matchLabelKeys): no máximo 1
 # réplica da Orders por nó. Rollouts funcionam; a 3ª réplica com 2 nós fica Pending.
 spec:
   template:

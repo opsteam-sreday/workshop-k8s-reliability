@@ -1,4 +1,4 @@
-# LAB 07 D1 — podAffinity PREFERRED: BFF "de preferência" no nó da Inventory (réplica única). O topology spread
+# LAB 04 D1 — podAffinity PREFERRED: BFF "de preferência" no nó da Inventory (réplica única). O topology spread
 # (DoNotSchedule) é filtro e vence a preferência: as 2 réplicas continuam 1 por nó.
 spec:
   template:

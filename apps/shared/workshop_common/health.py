@@ -7,7 +7,7 @@
 Readiness intencionalmente NÃO verifica dependências downstream (ex.: Inventory API),
 para não remover todas as réplicas do Service quando uma dependência falha (cascata).
 
-health_admin_router (API admin, só loopback; LAB 05) força cada probe a falhar em UM Pod:
+health_admin_router (API admin, só loopback; LAB 02) força cada probe a falhar em UM Pod:
 - PUT /admin/health {"ready": false}: readiness 503, liveness segue 200 (sai do Service, não reinicia).
 - POST /admin/health/freeze?seconds=N: bloqueia o event loop; nenhuma probe responde (sai do Service e,
   pela liveness, é reiniciado).
@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 class HealthState:
     started: bool = False
     shutting_down: bool = False
-    forced_not_ready: bool = False   # LAB 05: readiness falha de propósito (health_admin_router)
+    forced_not_ready: bool = False   # LAB 02: readiness falha de propósito (health_admin_router)
     details: dict[str, object] = field(default_factory=dict)
 
 

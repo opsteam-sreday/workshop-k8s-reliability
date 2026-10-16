@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Coleta evidências do LAB 02 (HPA scale-out + Cluster Autoscaler node scale-out).
+# Coleta evidências do LAB 06 (HPA scale-out + Cluster Autoscaler node scale-out).
 source "$(dirname "$0")/../../scripts/lib/common.sh"
-out="$STATE_DIR/lab-02-evidence.txt"
+out="$STATE_DIR/lab-06-evidence.txt"
 {
-  echo "# LAB 02 — $(date -u +%FT%TZ)"
+  echo "# LAB 06 — $(date -u +%FT%TZ)"
   echo "## HPA"; kubectl -n ecommerce describe hpa orders-api | sed -n '/Events:/,$p'
   echo "## Eventos FailedScheduling / TriggeredScaleUp"
   kubectl get events -A --field-selector reason=FailedScheduling -o custom-columns=TIME:.lastTimestamp,OBJ:.involvedObject.name,MSG:.message | tail -5

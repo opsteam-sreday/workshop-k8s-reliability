@@ -10,20 +10,20 @@
 |---|---|---|
 | 0:00 | Abertura: tese, arquitetura, contrato idempotente, tour do HyperDX | 20 min |
 | 0:20 | **LAB 01** — First Successful Order | 35 min |
-| 0:55 | **LAB 02** — CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | 45 min |
-| 1:40 | Intervalo | 10 min |
-| 1:50 | **LAB 03** — QoS & PriorityClass | 45 min |
-| 2:35 | **LAB 04** — Circuit Breaker | 35 min |
-| 3:10 | **LAB 05** — Probes & Graceful Shutdown | 40 min |
-| 3:50 | Intervalo | 10 min |
-| 4:00 | **LAB 06** — RollingUpdate & PodDisruptionBudget | 40 min |
-| 4:40 | **LAB 07** — Affinity, Anti-affinity & Topology Spread | 50 min |
+| 0:55 | **LAB 02** — Probes & Graceful Shutdown | 40 min |
+| 1:35 | Intervalo | 10 min |
+| 1:45 | **LAB 03** — RollingUpdate & PodDisruptionBudget | 40 min |
+| 2:25 | **LAB 04** — Affinity, Anti-affinity & Topology Spread | 50 min |
+| 3:15 | Intervalo | 10 min |
+| 3:25 | **LAB 05** — QoS & PriorityClass | 45 min |
+| 4:10 | **LAB 06** — CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | 45 min |
+| 4:55 | **LAB 07** — Circuit Breaker | 35 min |
 | 5:30 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
 
 **Extra (fora da agenda):** [LAB X1 — ClickStack Alerting](../labs/.extras/lab-x1/README.md) (anti-pattern de alertas por
 contagem de logs, ~40 min). Use se sobrar tempo ou como material de estudo depois do evento.
 
-**Dica:** o scale-out de nós do LAB 02 leva de 2 a 4 minutos. Use esse tempo para discutir HPA × CA. Já o scale-down leva cerca de 4 minutos depois que a carga para (stabilization de 120 s + `scale-down-unneeded-time` de 2 min). Não espere por ele: siga para o intervalo.
+**Dica:** o scale-out de nós do LAB 06 leva de 2 a 4 minutos. Use esse tempo para discutir HPA × CA. Já o scale-down leva cerca de 4 minutos depois que a carga para (stabilization de 120 s + `scale-down-unneeded-time` de 2 min). Não espere por ele: siga para o LAB 07.
 
 **Modo de condução:**
 
@@ -40,7 +40,7 @@ Faça com pelo menos 1 dia de antecedência:
 - [ ] Ferramentas: `aws` v2, `kubectl` ≥ 1.34, `eksctl` ≥ 0.231, `helm` ≥ 3.14 (testado com 4.3), `docker` com buildx, `python3`, `k6` (opcional: os testes rodam como Job no cluster).
 - [ ] Estimativa de custo comunicada ao responsável pela conta:
   - ~US$ 0,55/h em repouso: EKS US$ 0,10 + 2×m6i.large + 1×m6i.xlarge + NAT + EBS.
-  - ~US$ 0,85/h no pico do LAB 02, com 5 nós apps.
+  - ~US$ 0,85/h no pico do LAB 06, com 5 nós apps.
   - Um dia de workshop (setup na véspera + 8h) custa cerca de US$ 15–20.
 - [ ] Execute `scripts/setup.sh` com **35–45 min de antecedência**. A criação do EKS leva de 15 a 20 min, e o ClickStack, mais 10 a 15 min.
 - [ ] Execute `scripts/deploy.sh` (build e push das imagens + deploy, ≈5–10 min).
@@ -66,7 +66,7 @@ ambiente completo `rw-<id>` com isolamento próprio:
 **Com 1 semana de antecedência:**
 
 1. `make fleet-quotas` — com 40 alunos, aumente em `us-east-1` **VPCs, Internet gateways e Elastic IPs** (padrão 5;
-   ~50), **NAT gateways por AZ** (padrão 5; ~20 — o NAT de cada cluster cai em uma AZ) e **vCPU On-Demand Standard** (≥ 600: 8 vCPU/aluno em repouso, até 14 no LAB 02). Peça com antecedência.
+   ~50), **NAT gateways por AZ** (padrão 5; ~20 — o NAT de cada cluster cai em uma AZ) e **vCPU On-Demand Standard** (≥ 600: 8 vCPU/aluno em repouso, até 14 no LAB 06). Peça com antecedência.
 2. Com credenciais da **conta de gerenciamento** da organização (dona do IAM Identity Center):
    `WORKSHOP_ACCOUNT_ID=<conta do workshop> make identity-center` — cria o permission set `ReliabilityWorkshopStudent`
    (só `sts:AssumeRole` em `rw-*-student`), os usuários (`CREATE_USERS=false` se o diretório for externo/SCIM) e a
@@ -109,57 +109,18 @@ na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastruct
   - Autenticação AWS (quem é você para a AWS), identidade Kubernetes (qual SA) e autorização entre aplicações (BFF → Orders) são camadas diferentes.
 - **Pontos de atenção:** no trace distribuído, mostre os spans `Idempotency Claim`, `Reserve Inventory` e `Complete Order` (TransactWriteItems).
 
-### LAB 02 — CPU Stress & Autoscaling
-
-- **Break:** `ORDERS_CPU_WORK_MS=40` + `stress-orders.js`.
-- **Observe:** HPA (`TARGETS` acima de 60%), réplicas subindo, Pods `Pending` (`FailedScheduling`), `TriggeredScaleUp` e nós novos.
-- **Pontos de discussão:**
-  - O HPA calcula a utilização sobre `requests.cpu`. Com request de 250m, 150m de uso já são 60%. Requests mal dimensionados geram escala excessiva ou insuficiente.
-  - HPA (segundos) × CA (minutos: EC2 + bootstrap + imagem). O "buraco" entre os dois é onde a latência explode. Vale discutir overprovisioning e pausa de Pods como fase 2.
-  - Python com GIL: 1 processo usa no máximo 1 core. O limite de 1000m é o teto real por Pod.
-  - Scale-down: `stabilizationWindowSeconds` evita *flapping*. O CA espera `scale-down-unneeded-time`.
-- **Lembrete:** o observability node group tem tamanho fixo (1) e taint. O CA e o k6 rodam lá e não competem com a carga.
-
-### LAB 03 — QoS & PriorityClass
-
-- **Break:**
-  1. Perfis BestEffort, Burstable e Guaranteed (`labs/lab-03/qos.sh`).
-  2. `cpu-burn` com limite de 500m, que causa **throttling** (`labs/lab-03/cpu-stat.sh`).
-  3. `memory 700` com limite de 512Mi, que causa **OOMKilled**. O restart zera o estoque em memória.
-  4. Preemption: CA em 0 + Inventory em `low-priority-services` + `fill-capacity.py` + scale da Orders.
-- **Pontos de discussão:**
-  - QoS decide **quem sofre primeiro** sob pressão do nó. PriorityClass decide **quem é agendado e quem é removido** quando falta capacidade. São problemas diferentes: um Pod **Guaranteed** de baixa prioridade é preemptado mesmo assim.
-  - Throttling não aparece como restart: o Pod fica "saudável" e lento. Por isso a métrica `container.cpu.throttled_time` existe.
-  - Atribuir prioridade baixa à Inventory é um anti-pattern **intencional**. Ela participa da transação STRICT, então removê-la derruba 100% dos pedidos, mesmo com BFF e Orders "críticas".
-  - Prioridade é transitiva: as dependências síncronas do caminho crítico herdam a criticidade.
-- **Pontos de atenção:** depois da preemption, a Inventory fica Pending. A correção (`critical-services`) **não basta** sem capacidade: Pods de mesma prioridade não se preemptam. Reative o CA (`scripts/reset.sh` ou escalar o CA para 1) para que um nó novo seja criado.
-
-### LAB 04 — Circuit Breaker
-
-- **Break:** latência de 800 ms na reserva (timeout de 500 ms) e depois HTTP 503.
-- **Observe:**
-  - `labs/lab-04/watch-cb.sh`: CLOSED → OPEN → HALF_OPEN → OPEN/CLOSED.
-  - Respostas 503 com `reason=circuit_open` voltando em menos de 10 ms.
-  - Traces com eventos `retry` e `attempt.failed`.
-- **Pontos de discussão:**
-  - Sem o circuit breaker, cada requisição esperaria cerca de 3×500 ms + backoff, prendendo conexões e workers. O fail fast protege a Orders **e** a Inventory degradada.
-  - Retry amplification (exemplo hipotético): se cliente, BFF e Orders fizessem 3 tentativas cada, uma requisição poderia virar 3×3×3 = 27 chamadas à Inventory. Neste workshop só a Orders faz retry para a Inventory (até 2 retries, com orçamento de 2 s) e o circuito aberto interrompe os retries. O SDK do DynamoDB tem retry próprio (max_attempts=3) — outra camada a considerar.
-  - O estado do circuito é local por réplica. Com 4 réplicas, até 8 chamadas de teste em HALF_OPEN. Compartilhar estado é fase 2.
-  - Timeout após o commit (`slow-after-commit`): a reserva **aconteceu**. Por isso não há compensação cega, e o retry reutiliza a mesma reserva (idempotência na Inventory).
-  - Readiness não verifica a Inventory, de propósito. Se verificasse, todas as réplicas da Orders sairiam do Service (cascata).
-
-### LAB 05 — Probes & Graceful Shutdown
+### LAB 02 — Probes & Graceful Shutdown
 
 - **Break:** `fault.sh orders not-ready|freeze <s> <pod>` (uma réplica), `rollout restart` sob carga, deploy com tabela
   errada (`set env ORDERS_TABLE_NAME=…`) e Inventory 503.
-- **Observe:** `labs/lab-05/watch-pod.sh <pod>` (READY, RESTARTS, se recebe tráfego) e
-  `labs/lab-05/count-responses.sh "$T0"` (respostas da BFF por status na janela). Valores de referência na seção 7 do lab.
+- **Observe:** `labs/lab-02/watch-pod.sh <pod>` (READY, RESTARTS, se recebe tráfego) e
+  `labs/lab-02/count-responses.sh "$T0"` (respostas da BFF por status na janela). Valores de referência na seção 7 do lab.
 - **Pontos de discussão:**
   - Readiness decide **tráfego**; liveness decide **restart**. No `freeze`, o Pod sai do Service (~14 s) **antes** de
     ser reiniciado (~36 s); entre `Killing` e `Started` passam 30 s (processo travado não trata o `SIGTERM`).
   - Startup + `maxUnavailable: 0`: um deploy quebrado nunca recebe tráfego e o rollout para.
 
-### LAB 06 — RollingUpdate & PodDisruptionBudget
+### LAB 03 — RollingUpdate & PodDisruptionBudget
 
 - **Break:** rollout com `maxSurge 0 / maxUnavailable 100%` sob carga, rollout da Inventory (`Recreate`), PDB da Orders
   com `maxUnavailable: 0` durante um `kubectl drain`, `kubectl delete pod` e drain do nó da Inventory.
@@ -170,7 +131,7 @@ na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastruct
   - PDB com réplica única (Inventory) não protege nada: ou bloqueia toda manutenção (`minAvailable: 1`) ou deixa
     remover a única réplica (`maxUnavailable: 1`). A saída é ter réplicas — que a Inventory (estado em memória) não pode.
 
-### LAB 07 — Affinity, Anti-affinity & Topology Spread
+### LAB 04 — Affinity, Anti-affinity & Topology Spread
 
 - **Break:** `nodeAffinity` para uma zona inexistente (required × preferred), `podAntiAffinity` required na Orders
   (3ª réplica `Pending`; sem `matchLabelKeys` o próprio rollout trava), anti-affinity preferred (empilha), `podAffinity`
@@ -180,6 +141,45 @@ na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastruct
   - Anti-affinity required = no máximo 1 por domínio (escala limitada ao número de nós); topology spread = equilíbrio
     (permite N por nó). Combinar regras *required* pode não ter solução.
   - As partes B e E desligam o Cluster Autoscaler: num cluster por aluno isso só afeta o próprio aluno.
+
+### LAB 05 — QoS & PriorityClass
+
+- **Break:**
+  1. Perfis BestEffort, Burstable e Guaranteed (`labs/lab-05/qos.sh`).
+  2. `cpu-burn` com limite de 500m, que causa **throttling** (`labs/lab-05/cpu-stat.sh`).
+  3. `memory 700` com limite de 512Mi, que causa **OOMKilled**. O restart zera o estoque em memória.
+  4. Preemption: CA em 0 + Inventory em `low-priority-services` + `fill-capacity.py` + scale da Orders.
+- **Pontos de discussão:**
+  - QoS decide **quem sofre primeiro** sob pressão do nó. PriorityClass decide **quem é agendado e quem é removido** quando falta capacidade. São problemas diferentes: um Pod **Guaranteed** de baixa prioridade é preemptado mesmo assim.
+  - Throttling não aparece como restart: o Pod fica "saudável" e lento. Por isso a métrica `container.cpu.throttled_time` existe.
+  - Atribuir prioridade baixa à Inventory é um anti-pattern **intencional**. Ela participa da transação STRICT, então removê-la derruba 100% dos pedidos, mesmo com BFF e Orders "críticas".
+  - Prioridade é transitiva: as dependências síncronas do caminho crítico herdam a criticidade.
+- **Pontos de atenção:** depois da preemption, a Inventory fica Pending. A correção (`critical-services`) **não basta** sem capacidade: Pods de mesma prioridade não se preemptam. Reative o CA (`scripts/reset.sh` ou escalar o CA para 1) para que um nó novo seja criado.
+
+### LAB 06 — CPU Stress & Autoscaling
+
+- **Break:** `ORDERS_CPU_WORK_MS=40` + `stress-orders.js`.
+- **Observe:** HPA (`TARGETS` acima de 60%), réplicas subindo, Pods `Pending` (`FailedScheduling`), `TriggeredScaleUp` e nós novos.
+- **Pontos de discussão:**
+  - O HPA calcula a utilização sobre `requests.cpu`. Com request de 250m, 150m de uso já são 60%. Requests mal dimensionados geram escala excessiva ou insuficiente.
+  - HPA (segundos) × CA (minutos: EC2 + bootstrap + imagem). O "buraco" entre os dois é onde a latência explode. Vale discutir overprovisioning e pausa de Pods como fase 2.
+  - Python com GIL: 1 processo usa no máximo 1 core. O limite de 1000m é o teto real por Pod.
+  - Scale-down: `stabilizationWindowSeconds` evita *flapping*. O CA espera `scale-down-unneeded-time`.
+- **Lembrete:** o observability node group tem tamanho fixo (1) e taint. O CA e o k6 rodam lá e não competem com a carga.
+
+### LAB 07 — Circuit Breaker
+
+- **Break:** latência de 800 ms na reserva (timeout de 500 ms) e depois HTTP 503.
+- **Observe:**
+  - `labs/lab-07/watch-cb.sh`: CLOSED → OPEN → HALF_OPEN → OPEN/CLOSED.
+  - Respostas 503 com `reason=circuit_open` voltando em menos de 10 ms.
+  - Traces com eventos `retry` e `attempt.failed`.
+- **Pontos de discussão:**
+  - Sem o circuit breaker, cada requisição esperaria cerca de 3×500 ms + backoff, prendendo conexões e workers. O fail fast protege a Orders **e** a Inventory degradada.
+  - Retry amplification (exemplo hipotético): se cliente, BFF e Orders fizessem 3 tentativas cada, uma requisição poderia virar 3×3×3 = 27 chamadas à Inventory. Neste workshop só a Orders faz retry para a Inventory (até 2 retries, com orçamento de 2 s) e o circuito aberto interrompe os retries. O SDK do DynamoDB tem retry próprio (max_attempts=3) — outra camada a considerar.
+  - O estado do circuito é local por réplica. Com 4 réplicas, até 8 chamadas de teste em HALF_OPEN. Compartilhar estado é fase 2.
+  - Timeout após o commit (`slow-after-commit`): a reserva **aconteceu**. Por isso não há compensação cega, e o retry reutiliza a mesma reserva (idempotência na Inventory).
+  - Readiness não verifica a Inventory, de propósito. Se verificasse, todas as réplicas da Orders sairiam do Service (cascata).
 
 ### LAB X1 — ClickStack Alerting (extra, fora da agenda)
 
@@ -199,14 +199,14 @@ na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastruct
 | 01 | Por que a mesma chave com payload diferente retorna 409 e não "cria outro pedido"? | A chave identifica a **intenção**. O hash canônico diferente indica reuso indevido. Aceitar o novo payload quebraria o contrato e esconderia bugs no cliente |
 | 01 | O que acontece se o Pod morrer após reservar e antes de persistir? | O registro fica IN_PROGRESS com lease. Requisições seguintes recebem 409 `ORDER_IN_PROGRESS` + `Retry-After`. Depois que o lease expira, um executor faz takeover (`version+1`) e reenvia a reserva com o mesmo `reservation_id`. A Inventory responde como replay (sem novo decremento) e o pedido é confirmado. Os testes de integração `test_07` comprovam esse fluxo |
 | 01 | Como provar que a BFF não acessa o DynamoDB? | `scripts/validate-iam.sh`: a SA `bff-api-sa` não tem associação (`Unable to locate credentials`) e o IMDS está bloqueado |
-| 02 | Remova `requests.cpu` da Orders. O que o HPA faz? | `TARGETS` mostra `<unknown>`: sem request não existe utilização, e o HPA não escala (`FailedGetResourceMetric`) |
-| 02 | Por que os Pods ficam Pending antes do nó novo aparecer? | O HPA cria réplicas em segundos. O CA só age quando surge um Pending, e o EC2 leva minutos para entrar no cluster |
-| 02 | Como reduzir o tempo de reação? | Requests corretos, `minReplicas` maior em horários de pico, overprovisioning com Pods de baixa prioridade (pause) e instâncias/AMIs com imagens pré-carregadas |
-| 03 | Qual Pod morre primeiro numa pressão de memória do nó? | BestEffort (`oom_score_adj` 1000), depois Burstable acima do request, e Guaranteed por último |
-| 03 | Guaranteed protege contra preemption? | Não. Preemption depende só da PriorityClass. O LAB demonstra isso com a Inventory Guaranteed sendo preemptada |
-| 03 | Qual a correção para a Inventory? | `critical-services` (a mesma prioridade do caminho crítico) + capacidade (CA) + requests realistas. Na fase 2: réplicas com estado compartilhado + PDB |
-| 04 | Por que não fazer retry na BFF também? | Amplificação multiplicativa. Além disso, a BFF não sabe se o POST foi aplicado. O cliente final repete com a mesma Idempotency-Key, respeitando `Retry-After` |
-| 04 | Com 5 réplicas da Orders, quantas falhas até "todo o sistema" abrir o circuito? | Cada réplica precisa de 5 falhas consecutivas próprias. Como o tráfego é distribuído, o total é ≈ 25 falhas, e o comportamento é inconsistente entre réplicas (estado local) |
+| 05 | Qual Pod morre primeiro numa pressão de memória do nó? | BestEffort (`oom_score_adj` 1000), depois Burstable acima do request, e Guaranteed por último |
+| 05 | Guaranteed protege contra preemption? | Não. Preemption depende só da PriorityClass. O LAB demonstra isso com a Inventory Guaranteed sendo preemptada |
+| 05 | Qual a correção para a Inventory? | `critical-services` (a mesma prioridade do caminho crítico) + capacidade (CA) + requests realistas. Na fase 2: réplicas com estado compartilhado + PDB |
+| 06 | Remova `requests.cpu` da Orders. O que o HPA faz? | `TARGETS` mostra `<unknown>`: sem request não existe utilização, e o HPA não escala (`FailedGetResourceMetric`) |
+| 06 | Por que os Pods ficam Pending antes do nó novo aparecer? | O HPA cria réplicas em segundos. O CA só age quando surge um Pending, e o EC2 leva minutos para entrar no cluster |
+| 06 | Como reduzir o tempo de reação? | Requests corretos, `minReplicas` maior em horários de pico, overprovisioning com Pods de baixa prioridade (pause) e instâncias/AMIs com imagens pré-carregadas |
+| 07 | Por que não fazer retry na BFF também? | Amplificação multiplicativa. Além disso, a BFF não sabe se o POST foi aplicado. O cliente final repete com a mesma Idempotency-Key, respeitando `Retry-After` |
+| 07 | Com 5 réplicas da Orders, quantas falhas até "todo o sistema" abrir o circuito? | Cada réplica precisa de 5 falhas consecutivas próprias. Como o tráfego é distribuído, o total é ≈ 25 falhas, e o comportamento é inconsistente entre réplicas (estado local) |
 | X1 | Por que o alerta "Orders Creation Errors" mostra o dobro das falhas? | Cada 503 gera 2 logs ERROR com a mesma rota e status: "Inventory API indisponível" e "HTTP request completed" |
 | X1 | Proponha o alerta correto | Taxa de 5xx sobre o total por rota a partir de `http.server.request.duration` (count por `http.response.status_code`) ou de spans `SpanKind=Server`. Com janela e burn rate (fase 2) |
 
@@ -216,7 +216,7 @@ na conta de gerenciamento, `infrastructure/identity-center.sh remove infrastruct
 |---|---|---|
 | `ImagePullBackOff` nas APIs | `kubectl -n ecommerce describe pod <pod>`: repositório ECR inexistente ou tag não publicada | Confira a tag (`scripts/images.sh tag orders-api`) e `aws ecr describe-images --repository-name reliability-workshop/orders-api`. Publique com `scripts/images.sh all` (ou o workflow `images`) e reaplique com `scripts/deploy.sh --skip-build` |
 | Pods `Pending` com `untolerated taint {workload: observability}` | O workload foi para o node group errado | As APIs usam `nodeSelector: workload=apps`. Verifique `kubectl get nodes -L workload`. No ClickStack, confira `observability/clickstack/values.yaml` |
-| Pods `Pending` com `Insufficient cpu` fora do LAB 02/03 | Sobras de laboratório (ballast, HPA alto, CA em 0) | `scripts/reset.sh`. Confira `kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler` (réplicas = 1) |
+| Pods `Pending` com `Insufficient cpu` fora do LAB 05/06 | Sobras de laboratório (ballast, HPA alto, CA em 0) | `scripts/reset.sh`. Confira `kubectl -n kube-system get deploy -l app.kubernetes.io/name=aws-cluster-autoscaler` (réplicas = 1) |
 | APIs nunca ficam Ready (readiness/liveness falhando) com NetworkPolicy | Possível bloqueio das probes do kubelet pela NetworkPolicy | **Diagnóstico temporário:** `kubectl -n ecommerce delete networkpolicy default-deny-ingress`. Se os Pods ficarem Ready, o problema é a policy: reaplique com `kubectl apply -k kubernetes/overlays/generated` e verifique a versão do VPC CNI (`enableNetworkPolicy`). Não deixe a policy removida |
 | Orders não fica Ready (startup 503) | `kubectl -n ecommerce logs deploy/orders-api \| grep Warm-up`: AccessDenied ou ResourceNotFound | `infrastructure/pod-identity.sh status`, `infrastructure/dynamodb.sh status`. Confira `ORDERS_TABLE_NAME`/`AWS_REGION` no ConfigMap `orders-config` |
 | HyperDX sem dados das APIs | Secret ou ingestion key incorreta, ou gateway com erro 401 | `kubectl -n observability get secret clickstack-ingestion`, `kubectl -n observability logs deploy/otel-gateway \| grep -iE "error\|401"`. Reexecute `scripts/setup.sh`: ele é idempotente, recria o Secret e reinicia o gateway |

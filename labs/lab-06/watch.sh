@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Painel de terminal do LAB 02: HPA, Pods da Orders API, Pods Pending e nós (atualiza a cada 5s).
+# Painel de terminal do LAB 06: HPA, Pods da Orders API, Pods Pending e nós (atualiza a cada 5s).
 source "$(dirname "$0")/../../scripts/lib/common.sh"
 set +e   # painel contínuo: erros transitórios do kubectl não devem encerrar o loop
 while true; do

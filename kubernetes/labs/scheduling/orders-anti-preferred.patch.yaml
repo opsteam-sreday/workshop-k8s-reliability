@@ -1,4 +1,4 @@
-# LAB 07 C — podAntiAffinity PREFERRED por nó: espalha quando pode, empilha quando não há nó livre (não bloqueia).
+# LAB 04 C — podAntiAffinity PREFERRED por nó: espalha quando pode, empilha quando não há nó livre (não bloqueia).
 spec:
   template:
     spec:

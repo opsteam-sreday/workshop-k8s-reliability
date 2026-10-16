@@ -61,7 +61,7 @@ eks-reliability-workshop/
 ├── observability/    clickstack/ (values, bootstrap) · otel/ (gateway, agent) · alerts/ · queries/
 ├── load-tests/       create-orders.js · get-orders.js · stress-orders.js · inventory-errors.js
 │                     idempotency-concurrency.js · lib/common.js
-├── labs/             lab-01 … lab-07 (README + scripts) · .extras/lab-x1 (alerting, fora da agenda)
+├── labs/             lab-01 … lab-04 (README + scripts) · .extras/lab-x1 (alerting, fora da agenda)
 ├── scripts/          setup.sh · deploy.sh · validate.sh · validate-iam.sh · reset.sh · teardown.sh
 │                     fault.sh · k6.sh · test.sh · local/stack.py · lib/
 ├── tests/integration (processos reais + DynamoDB Local)
@@ -106,7 +106,7 @@ Todas as versões ficam em `scripts/lib/common.sh` e podem ser sobrescritas por 
 | NAT Gateway | 1 | 0,045 + dados |
 | EBS gp3 (nós + PVCs ClickHouse/Keeper/MongoDB ≈ 145 GB) | — | ≈ 0,02 |
 | DynamoDB on-demand, ECR | — | centavos |
-| **Total** | | **≈ 0,55/h em repouso · ≈ 0,85/h no pico do LAB 02** |
+| **Total** | | **≈ 0,55/h em repouso · ≈ 0,85/h no pico do LAB 06** |
 
 Uma turma de 4 h custa ≈ US$ 3–4. **Execute `scripts/teardown.sh` ao final.**
 
@@ -117,7 +117,7 @@ Atalho via `Makefile` (`make help` lista todos os alvos, por etapa e por laborat
 ```bash
 make check            # ferramentas + credenciais AWS
 make up               # setup + deploy + validate
-make lab02-start lab02-load    # exemplo: passos do LAB 02
+make lab06-start lab06-load    # exemplo: passos do LAB 06
 make reset            # entre laboratórios
 make teardown         # remove tudo (ASSUME_YES=true para não perguntar)
 ```
@@ -162,12 +162,12 @@ curl -s -X POST $BFF/orders -H "Idempotency-Key: $(uuidgen | tr A-Z a-z)" -H 'Co
 | Lab | Tema | Comando-chave | Verificação |
 |---|---|---|---|
 | [LAB 01](labs/lab-01/README.md) | First Successful Order (pedido, DynamoDB, Pod Identity, trace, idempotência) | `scripts/k6.sh idempotency-concurrency.js` | `scripts/validate.sh`, `scripts/validate-iam.sh` |
-| [LAB 02](labs/lab-02/README.md) | CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | `kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS=40` + `scripts/k6.sh stress-orders.js RATE=60 DURATION=6m` | `labs/lab-02/verify.sh` |
-| [LAB 03](labs/lab-03/README.md) | QoS & PriorityClass (throttling, OOMKilled, preemption) | `labs/lab-03/qos.sh …`, `labs/lab-03/fill-capacity.py` | ver README |
-| [LAB 04](labs/lab-04/README.md) | Circuit Breaker (CLOSED → OPEN → HALF_OPEN → CLOSED) | `scripts/fault.sh inventory latency 800 RESERVATIONS` + `labs/lab-04/watch-cb.sh` | ver README |
-| [LAB 05](labs/lab-05/README.md) | Probes & Graceful Shutdown (readiness × liveness × startup, rollout sem erro, deploy quebrado, anti-cascata) | `scripts/fault.sh orders not-ready\|freeze <s> <pod>` + `scripts/k6.sh create-orders.js` | `labs/lab-05/watch-pod.sh`, `labs/lab-05/count-responses.sh` |
-| [LAB 06](labs/lab-06/README.md) | RollingUpdate & PodDisruptionBudget (maxSurge/maxUnavailable, Recreate, PDB × drain) | `make lab06-aggressive`, `make lab06-pdb-zero` + `kubectl drain` | `labs/lab-05/count-responses.sh` |
-| [LAB 07](labs/lab-07/README.md) | Affinity, Anti-affinity & Topology Spread (nodeAffinity, podAntiAffinity, podAffinity, maxSkew, drain) | patches em `kubernetes/labs/scheduling/` (`make lab07-*`) | `labs/lab-05/watch-pod.sh` |
+| [LAB 02](labs/lab-02/README.md) | Probes & Graceful Shutdown (readiness × liveness × startup, rollout sem erro, deploy quebrado, anti-cascata) | `scripts/fault.sh orders not-ready\|freeze <s> <pod>` + `scripts/k6.sh create-orders.js` | `labs/lab-02/watch-pod.sh`, `labs/lab-02/count-responses.sh` |
+| [LAB 03](labs/lab-03/README.md) | RollingUpdate & PodDisruptionBudget (maxSurge/maxUnavailable, Recreate, PDB × drain) | `make lab03-aggressive`, `make lab03-pdb-zero` + `kubectl drain` | `labs/lab-02/count-responses.sh` |
+| [LAB 04](labs/lab-04/README.md) | Affinity, Anti-affinity & Topology Spread (nodeAffinity, podAntiAffinity, podAffinity, maxSkew, drain) | patches em `kubernetes/labs/scheduling/` (`make lab04-*`) | `labs/lab-02/watch-pod.sh` |
+| [LAB 05](labs/lab-05/README.md) | QoS & PriorityClass (throttling, OOMKilled, preemption) | `labs/lab-05/qos.sh …`, `labs/lab-05/fill-capacity.py` | ver README |
+| [LAB 06](labs/lab-06/README.md) | CPU Stress & Autoscaling (HPA + Cluster Autoscaler) | `kubectl -n ecommerce set env deploy/orders-api ORDERS_CPU_WORK_MS=40` + `scripts/k6.sh stress-orders.js RATE=60 DURATION=6m` | `labs/lab-06/verify.sh` |
+| [LAB 07](labs/lab-07/README.md) | Circuit Breaker (CLOSED → OPEN → HALF_OPEN → CLOSED) | `scripts/fault.sh inventory latency 800 RESERVATIONS` + `labs/lab-07/watch-cb.sh` | ver README |
 | *Extra:* [LAB X1](labs/.extras/lab-x1/README.md) | ClickStack Alerting (4 alertas, anti-pattern) — fora da agenda | `scripts/fault.sh inventory http-503 …` + `scripts/k6.sh inventory-errors.js` | `labs/.extras/lab-x1/compare-counts.sh` |
 
 **Turma com um ambiente por aluno** (mesma conta, isolamento por cluster/tabela/role + login via IAM Identity Center):

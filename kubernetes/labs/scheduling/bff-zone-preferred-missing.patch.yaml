@@ -1,4 +1,4 @@
-# LAB 07 A2 — a mesma zona inexistente, mas PREFERRED: é só pontuação; o Pod é agendado mesmo assim.
+# LAB 04 A2 — a mesma zona inexistente, mas PREFERRED: é só pontuação; o Pod é agendado mesmo assim.
 spec:
   template:
     spec:

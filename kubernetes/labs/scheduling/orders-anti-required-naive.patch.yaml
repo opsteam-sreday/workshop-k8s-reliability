@@ -1,4 +1,4 @@
-# LAB 07 B1 — podAntiAffinity REQUIRED por nó SEM matchLabelKeys: o labelSelector também enxerga as réplicas do
+# LAB 04 B1 — podAntiAffinity REQUIRED por nó SEM matchLabelKeys: o labelSelector também enxerga as réplicas do
 # ReplicaSet antigo. Com 2 nós ocupados e maxUnavailable: 0, o Pod extra do rollout (maxSurge: 1) não tem nó.
 spec:
   template:

@@ -1,4 +1,4 @@
-# LAB 07 A1 — nodeAffinity REQUIRED para uma zona onde não existe nó: o Pod novo nunca é agendado.
+# LAB 04 A1 — nodeAffinity REQUIRED para uma zona onde não existe nó: o Pod novo nunca é agendado.
 spec:
   template:
     spec:

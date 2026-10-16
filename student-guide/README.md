@@ -160,7 +160,7 @@ scripts/fault.sh all reset
 kubectl -n ecommerce get hpa,pods -o wide
 kubectl get events -A --sort-by=.lastTimestamp | tail -20
 kubectl -n ecommerce top pods
-labs/lab-04/watch-cb.sh
+labs/lab-07/watch-cb.sh
 
 # Reset entre laboratórios
 scripts/reset.sh
@@ -186,12 +186,12 @@ scripts/reset.sh
 ## 7. Laboratórios (nesta ordem)
 
 1. [LAB 01 — First Successful Order](../labs/lab-01/README.md): pedido, reserva, DynamoDB, Pod Identity, trace e idempotência.
-2. [LAB 02 — CPU Stress & Autoscaling](../labs/lab-02/README.md): HPA, Pods Pending e Cluster Autoscaler.
-3. [LAB 03 — QoS & PriorityClass](../labs/lab-03/README.md): throttling, OOMKilled, eviction e preemption.
-4. [LAB 04 — Circuit Breaker](../labs/lab-04/README.md): timeout, retry, OPEN, HALF_OPEN e CLOSED.
-5. [LAB 05 — Probes & Graceful Shutdown](../labs/lab-05/README.md): readiness × liveness × startup, rollout sem erro, deploy quebrado e anti-cascata.
-6. [LAB 06 — RollingUpdate & PodDisruptionBudget](../labs/lab-06/README.md): estratégias de rollout, Recreate e o que a PDB protege (e o que não).
-7. [LAB 07 — Affinity, Anti-affinity & Topology Spread](../labs/lab-07/README.md): onde os Pods rodam, regras required × preferred e drain de nó.
+2. [LAB 02 — Probes & Graceful Shutdown](../labs/lab-02/README.md): readiness × liveness × startup, rollout sem erro, deploy quebrado e anti-cascata.
+3. [LAB 03 — RollingUpdate & PodDisruptionBudget](../labs/lab-03/README.md): estratégias de rollout, Recreate e o que a PDB protege (e o que não).
+4. [LAB 04 — Affinity, Anti-affinity & Topology Spread](../labs/lab-04/README.md): onde os Pods rodam, regras required × preferred e drain de nó.
+5. [LAB 05 — QoS & PriorityClass](../labs/lab-05/README.md): throttling, OOMKilled, eviction e preemption.
+6. [LAB 06 — CPU Stress & Autoscaling](../labs/lab-06/README.md): HPA, Pods Pending e Cluster Autoscaler.
+7. [LAB 07 — Circuit Breaker](../labs/lab-07/README.md): timeout, retry, OPEN, HALF_OPEN e CLOSED.
 
 Extra (fora da agenda): [LAB X1 — ClickStack Alerting](../labs/.extras/lab-x1/README.md): quatro alertas e o anti-pattern de contagem de logs.
 

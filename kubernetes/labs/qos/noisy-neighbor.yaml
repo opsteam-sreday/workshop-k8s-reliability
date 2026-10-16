@@ -1,4 +1,4 @@
-# Vizinho barulhento BestEffort para o LAB 03: consome CPU no MESMO nó da Inventory API.
+# Vizinho barulhento BestEffort para o LAB 05: consome CPU no MESMO nó da Inventory API.
 # Carga limitada: 2 processos `yes` e encerramento automático após 10 minutos.
 apiVersion: v1
 kind: Pod
