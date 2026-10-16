@@ -162,7 +162,7 @@ hyperdx-credentials-push: ## Envia ao Secrets Manager as credenciais do HyperDX 
 	scripts/hyperdx-credentials.sh push
 
 ##@ Acesso
-.PHONY: hyperdx bff-port-forward hyperdx-credentials
+.PHONY: hyperdx bff-url bff-port-forward hyperdx-credentials
 hyperdx: ## Port-forward do HyperDX em http://localhost:3000
 	@echo "Credenciais: .workshop/hyperdx-credentials.json"
 	kubectl -n observability port-forward svc/clickstack-app 3000:3000
@@ -170,7 +170,12 @@ hyperdx: ## Port-forward do HyperDX em http://localhost:3000
 hyperdx-credentials: ## Mostra as credenciais do HyperDX
 	@cat .workshop/hyperdx-credentials.json
 
-bff-port-forward: ## Port-forward da BFF em http://localhost:8080
+bff-url: ## URL pública da BFF (NLB) e do Swagger
+	@h=$$($(NS) get svc bff-api-public -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'); \
+	  test -n "$$h" || { echo "NLB sem hostname ainda: kubectl -n ecommerce describe svc bff-api-public"; exit 1; }; \
+	  echo "BFF:     http://$$h"; echo "Swagger: http://$$h/docs"; echo "export BFF=http://$$h"
+
+bff-port-forward: ## Alternativa ao NLB: port-forward da BFF em http://localhost:8080
 	$(NS) port-forward svc/bff-api 8080:8080
 
 ##@ Carga (k6 dentro do cluster) — variáveis: RATE, DURATION, VUS

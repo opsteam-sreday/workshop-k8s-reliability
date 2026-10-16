@@ -117,13 +117,13 @@ do Circuit Breaker. A própria Inventory também limita concorrência (`INVENTOR
 scripts/fault.sh inventory slow-after-commit 800
 ```
 
-Crie um pedido manualmente com uma chave conhecida (port-forward da BFF):
+Crie um pedido manualmente com uma chave conhecida, pela BFF pública (NLB):
 
 ```bash
-kubectl -n ecommerce port-forward svc/bff-api 8080:8080 &
+export BFF=http://$(kubectl -n ecommerce get svc bff-api-public -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 KEY=$(python3 -c 'import uuid; print(uuid.uuid4())')
 BODY='{"customer_id":"customer-lab04","items":[{"sku":"product-002","quantity":1,"unit_price":"51.90"}]}'
-curl -s -i -X POST localhost:8080/orders -H "Content-Type: application/json" -H "Idempotency-Key: $KEY" -d "$BODY"
+curl -s -i -X POST $BFF/orders -H "Content-Type: application/json" -H "Idempotency-Key: $KEY" -d "$BODY"
 # HTTP/1.1 503  {"error":"DEPENDENCY_UNAVAILABLE", ... "reason":"timeout"}
 
 # Estado do registro de idempotência (API admin da Orders, via exec)
@@ -135,10 +135,9 @@ done
 scripts/fault.sh inventory state      # a reserva FOI aplicada (reservations_total +1) apesar do timeout
 
 scripts/fault.sh inventory reset
-curl -s -i -X POST localhost:8080/orders -H "Content-Type: application/json" -H "Idempotency-Key: $KEY" -d "$BODY"
+curl -s -i -X POST $BFF/orders -H "Content-Type: application/json" -H "Idempotency-Key: $KEY" -d "$BODY"
 # HTTP/1.1 201 — pedido CONFIRMED reutilizando a MESMA reserva (o estoque não é decrementado de novo)
 scripts/fault.sh inventory state
-kill %1
 ```
 
 > O registro de idempotência pode ser lido por qualquer réplica (está no DynamoDB); o laço acima só pega a primeira

@@ -149,11 +149,11 @@ Acesso ao HyperDX (credenciais geradas em `.workshop/hyperdx-credentials.json`):
 kubectl -n observability port-forward svc/clickstack-app 3000:3000   # http://localhost:3000
 ```
 
-Acesso à BFF a partir da sua máquina:
+Acesso à BFF a partir da sua máquina (NLB público `bff-api-public`, porta 80; ou `make bff-url`):
 
 ```bash
-kubectl -n ecommerce port-forward svc/bff-api 8080:8080
-curl -s -X POST localhost:8080/orders -H "Idempotency-Key: $(uuidgen | tr A-Z a-z)" -H 'Content-Type: application/json' \
+export BFF=http://$(kubectl -n ecommerce get svc bff-api-public -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+curl -s -X POST $BFF/orders -H "Idempotency-Key: $(uuidgen | tr A-Z a-z)" -H 'Content-Type: application/json' \
   -d '{"customer_id":"customer-123","items":[{"sku":"product-001","quantity":2,"unit_price":"49.90"}]}' -i
 ```
 
