@@ -21,6 +21,14 @@ spec:
       priorityClassName: critical-services
       terminationGracePeriodSeconds: 30
       nodeSelector: {workload: apps}
+      # No máximo 1 réplica de diferença entre os nós apps: perder um nó não leva todas as réplicas (LAB 06, parte E).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule        # regra rígida: prefere Pending a empilhar réplicas num nó
+          labelSelector: {matchLabels: {app.kubernetes.io/name: orders-api}}
+          matchLabelKeys: [pod-template-hash]     # só o ReplicaSet atual conta (rollouts não desequilibram)
+          nodeTaintsPolicy: Honor                 # nós com taint (observability, cordon) não contam como domínio
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

@@ -319,8 +319,8 @@ lab05-crash: ## Falha sem log ERROR: crash da Orders após a reserva
 lab05-stop: ## Remove as falhas do LAB 05
 	scripts/fault.sh all reset
 
-##@ LAB 06 — Probes & Graceful Shutdown (POD=<pod da Orders>)
-.PHONY: lab06-load lab06-watch lab06-not-ready lab06-ready lab06-freeze lab06-rollout lab06-break lab06-undo
+##@ LAB 06 — Probes, Graceful Shutdown & Topology Spread (POD=<pod da Orders>, NODE_A=<nó apps>)
+.PHONY: lab06-load lab06-watch lab06-not-ready lab06-ready lab06-freeze lab06-rollout lab06-break lab06-undo lab06-spread-fill lab06-spread-release lab06-drain lab06-rebalance
 lab06-load: ## Carga contínua com retry do cliente (RATE=10 DURATION=30m)
 	scripts/k6.sh create-orders.js RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),30m)
 
@@ -346,3 +346,22 @@ lab06-break: ## C: deploy quebrado (tabela inexistente)
 lab06-undo: ## C: desfaz o deploy quebrado
 	kubectl -n ecommerce rollout undo deploy/orders-api
 	kubectl -n ecommerce rollout status deploy/orders-api
+
+lab06-spread-fill: ## E2: CA off + ocupa só o nó A + Orders com 4 réplicas (NODE_A=...)
+	$(CA_SCALE) --replicas=0
+	labs/lab-03/fill-capacity.py --node $(NODE_A) --slack 100
+	$(NS) patch hpa orders-api -p '{"spec":{"minReplicas":4}}'
+
+lab06-spread-release: ## E2: remove o ballast e volta a Orders para 2 réplicas
+	kubectl -n loadtest delete pod -l app.kubernetes.io/name=capacity-ballast
+	$(NS) patch hpa orders-api -p '{"spec":{"minReplicas":2}}'
+
+lab06-drain: ## E3: drena o nó A (NODE_A=...)
+	kubectl drain $(NODE_A) --ignore-daemonsets --delete-emptydir-data
+
+lab06-rebalance: ## E3: uncordon do nó A + rollout restart (redistribui) + CA on (NODE_A=...)
+	kubectl uncordon $(NODE_A)
+	$(NS) rollout restart deploy/orders-api deploy/bff-api
+	$(NS) rollout status deploy/orders-api
+	$(NS) rollout status deploy/bff-api
+	$(CA_SCALE) --replicas=1

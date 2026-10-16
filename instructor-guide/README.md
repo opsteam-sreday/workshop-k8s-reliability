@@ -4,7 +4,7 @@
 >
 > **Metodologia de todos os labs:** Break it → Observe it → Understand it → Fix it → Validate it.
 
-## 1. Agenda sugerida (4h40)
+## 1. Agenda sugerida (4h55)
 
 | Horário | Bloco | Duração |
 |---|---|---|
@@ -15,8 +15,8 @@
 | 1:50 | **LAB 03** — QoS & PriorityClass | 45 min |
 | 2:35 | **LAB 04** — Circuit Breaker | 35 min |
 | 3:10 | **LAB 05** — ClickStack Alerting (anti-pattern) | 35 min |
-| 3:45 | **LAB 06** — Probes & Graceful Shutdown | 40 min |
-| 4:25 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
+| 3:45 | **LAB 06** — Probes, Graceful Shutdown & Topology Spread | 55 min |
+| 4:40 | Retrospectiva: as 12 configurações e o que fica para a fase 2 | 15 min |
 
 **Dica:** o scale-out de nós do LAB 02 leva de 2 a 4 minutos. Use esse tempo para discutir HPA × CA. Já o scale-down leva cerca de 4 minutos depois que a carga para (stabilization de 120 s + `scale-down-unneeded-time` de 2 min). Não espere por ele: siga para o intervalo.
 

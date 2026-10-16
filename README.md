@@ -166,7 +166,7 @@ curl -s -X POST localhost:8080/orders -H "Idempotency-Key: $(uuidgen | tr A-Z a-
 | [LAB 03](labs/lab-03/README.md) | QoS & PriorityClass (throttling, OOMKilled, preemption) | `labs/lab-03/qos.sh …`, `labs/lab-03/fill-capacity.py` | ver README |
 | [LAB 04](labs/lab-04/README.md) | Circuit Breaker (CLOSED → OPEN → HALF_OPEN → CLOSED) | `scripts/fault.sh inventory latency 800 RESERVATIONS` + `labs/lab-04/watch-cb.sh` | ver README |
 | [LAB 05](labs/lab-05/README.md) | ClickStack Alerting (4 alertas, anti-pattern) | `scripts/fault.sh inventory http-503 …` + `scripts/k6.sh inventory-errors.js` | `labs/lab-05/compare-counts.sh` |
-| [LAB 06](labs/lab-06/README.md) | Probes & Graceful Shutdown (readiness × liveness × startup, rollout, deploy quebrado) | `scripts/fault.sh orders not-ready\|freeze <s> <pod>` + `scripts/k6.sh create-orders.js` | `labs/lab-06/watch-pod.sh`, `labs/lab-06/count-responses.sh` |
+| [LAB 06](labs/lab-06/README.md) | Probes, Graceful Shutdown & Topology Spread (readiness × liveness × startup, rollout, deploy quebrado, drain de nó) | `scripts/fault.sh orders not-ready\|freeze <s> <pod>` + `scripts/k6.sh create-orders.js` | `labs/lab-06/watch-pod.sh`, `labs/lab-06/count-responses.sh` |
 
 **Turma com um ambiente por aluno** (mesma conta, isolamento por cluster/tabela/role + login via IAM Identity Center):
 `make fleet-quotas` · `make identity-center` · `make fleet-up` · `make fleet-down` — passo a passo no
