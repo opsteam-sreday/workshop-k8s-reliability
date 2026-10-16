@@ -220,6 +220,26 @@ for p in ('startup', 'live', 'ready'):
     except Exception as e: print(p, e.code, e.read().decode()[:250])"
 ```
 
+> **O que esse comando faz.** Ele **não** cria um container: o `kubectl exec` roda um script Python curto **dentro do
+> container que já existe** — o Pod novo, quebrado (`$NEW`).
+>
+> | Trecho | Papel |
+> |---|---|
+> | `NEW=$(… --sort-by=.metadata.creationTimestamp … {.items[-1:]…})` | pega o Pod mais recente da Orders: o criado pelo `set env` |
+> | `kubectl -n ecommerce exec $NEW -- python -c "…"` | executa o Python do próprio container, no namespace de rede dele |
+> | `urllib.request.urlopen('http://127.0.0.1:8080/health/' + p)` | chama as 3 rotas de health no `localhost` do Pod, como o kubelet faz |
+> | `for p in ('startup', 'live', 'ready')` | consulta startup, liveness e readiness lado a lado |
+> | `try … except … e.code, e.read()` | um `503` vira exceção no `urllib`; o `except` imprime o código e o corpo (com o `last_error`) |
+>
+> **Por que assim:**
+> - **Por que de dentro do Pod:** ele nunca fica pronto, então **não está no Service** — não dá para alcançá-lo pela
+>   BFF, pelo NLB nem por `kubectl port-forward svc/…`. De dentro do Pod, `127.0.0.1:8080` sempre responde.
+> - **Por que Python e não `curl`:** a imagem é `python:3.12-slim` com sistema de arquivos somente leitura e usuário
+>   sem privilégios: não há `curl` nem `wget`, e não dá para instalá-los. O Python e a `urllib` (biblioteca padrão) já
+>   estão lá.
+> - **É a mesma técnica do `scripts/fault.sh`:** ele também faz `kubectl exec … python` para falar com a API admin em
+>   `127.0.0.1:8081`, que só escuta dentro do Pod.
+
 Espere **~2 min** e confira de novo:
 
 ```bash
