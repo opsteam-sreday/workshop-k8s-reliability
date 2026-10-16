@@ -343,6 +343,145 @@ kubectl -n ecommerce get pods -o custom-columns=POD:.metadata.name,PRIO:.spec.pr
 - **Limits e throttling:** com `limits.cpu: 1000m`, o CFS limita o container a 1 core por período de 100 ms; o excesso vira `nr_throttled`/`throttled_usec` (`container.cpu.throttled_time`). Throttling **aumenta latência sem gerar erro** — não aparece como "falha", só como lentidão.
 - **Isolamento do plano de controle do experimento:** o k6 e o Cluster Autoscaler rodam no nó `observability` (taint `workload=observability:NoSchedule`), então a pressão nos nós `apps` não derruba o gerador de carga nem a observabilidade.
 
+### Os mecanismos nos diagramas da documentação do Kubernetes
+
+Cada mecanismo do lab, ilustrado com os exemplos de [kubernetes.io](https://kubernetes.io/docs/)
+(conteúdo sob [CC BY 4.0](https://github.com/kubernetes/website/blob/main/LICENSE)). Os marcados **oficial** são os
+diagramas da página citada, iguais ao original. Os marcados **adaptado** desenham o texto oficial da página, no estilo
+visual dos diagramas da doc.
+
+**1. O que o HPA controla** (oficial,
+[Horizontal Pod Autoscaling › How does a HorizontalPodAutoscaler work?](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/#how-does-a-horizontalpodautoscaler-work)).
+*"Figure 1. HorizontalPodAutoscaler controls the scale of a Deployment and its ReplicaSet"*: o HPA não cria Pods; ele
+ajusta o subrecurso `scale` do Deployment, e o ReplicaSet cria os Pods:
+
+```mermaid
+graph BT
+
+hpa[HorizontalPodAutoscaler] --> scale[Scale]
+
+subgraph rc[Deployment]
+    scale
+end
+
+scale -.-> pod1[Pod 1]
+scale -.-> pod2[Pod 2]
+scale -.-> pod3[Pod N]
+
+classDef hpa fill:#D5A6BD,stroke:#1E1E1D,stroke-width:1px,color:#1E1E1D;
+classDef rc fill:#F9CB9C,stroke:#1E1E1D,stroke-width:1px,color:#1E1E1D;
+classDef scale fill:#B6D7A8,stroke:#1E1E1D,stroke-width:1px,color:#1E1E1D;
+classDef pod fill:#9FC5E8,stroke:#1E1E1D,stroke-width:1px,color:#1E1E1D;
+class hpa hpa;
+class rc rc;
+class scale scale;
+class pod1,pod2,pod3 pod
+```
+
+No lab: `HPA orders-api` → `Deployment orders-api` → de 2 até 12 Pods.
+
+**2. O laço de controle e a fórmula** (adaptado de
+[Horizontal Pod Autoscaling › Algorithm details](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/#algorithm-details)).
+A cada 15 s (`--horizontal-pod-autoscaler-sync-period`), o controller lê a métrica de cada Pod e compara a média com o
+alvo. Para CPU, a utilização é **uso ÷ request**:
+
+```mermaid
+graph LR
+    t("a cada 15 s") --> m("resource metrics API<br/>(Metrics Server): CPU de cada Pod")
+    m --> u("utilização = uso ÷ requests.cpu<br/>média entre os Pods")
+    u --> f("desiredReplicas = ceil(currentReplicas ×<br/>currentMetricValue ÷ desiredMetricValue)")
+    f --> tol{"razão dentro da<br/>tolerância (0,1)?"}
+    tol -- "sim" --> n("nada muda")
+    tol -- "não" --> sc("ajusta spec.replicas<br/>(respeitando behavior, min e max)")
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    class t,tol,n plain;
+    class m,u,f,sc k8s;
+```
+
+O exemplo da doc: métrica atual `200m` com alvo `100m` → razão 2,0 → o número de réplicas **dobra**; com `50m`, cai
+pela metade. No lab o alvo é 60% de 250m (150m): 2 réplicas a 300m de média (120%) viram `ceil(2 × 120/60)` = 4. A doc
+também avisa: Pods ainda não prontos e Pods sem `requests` ficam fora do cálculo — sem request de CPU, o HPA
+**não age**.
+
+**3. Subir rápido, descer devagar — `behavior`** (adaptado de
+[Horizontal Pod Autoscaling › Default behavior](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/#default-behavior)
+e [Stabilization window](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/#stabilization-window)):
+
+```mermaid
+graph TB
+    subgraph UP["scaleUp (padrão)"]
+        u1("sem janela de estabilização:<br/>sobe na hora")
+        u2("a cada 15 s, no máximo<br/>o maior entre +100% e +4 Pods")
+    end
+    subgraph DOWN["scaleDown (padrão)"]
+        d1("janela de 300 s: usa a MAIOR recomendação<br/>dos últimos 5 min (máximo móvel)")
+        d2("depois pode remover até 100%<br/>a cada 15 s, até minReplicas")
+    end
+
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class u1,u2,d1,d2 k8s;
+    class UP,DOWN cluster;
+```
+
+O `hpa.yaml` do workshop mantém o scale-up padrão e encurta o scale-down: janela de **120 s** e no máximo **50% a cada
+30 s** — por isso, na seção 7.5, as réplicas começam a cair 120 s depois do fim da carga (e não 300 s) e descem pela
+metade a cada 30 s. A janela existe para evitar *flapping*: remover Pods e recriá-los logo depois.
+
+**4. Quem é o node autoscaler** (oficial,
+[Node Autoscaling › Autoscalers](https://kubernetes.io/docs/concepts/cluster-administration/node-autoscaling/#autoscalers)).
+O autoscaler lê Pods e nós do Kubernetes, cria ou remove as máquinas no provedor de nuvem e drena nós antes de
+removê-los:
+
+```mermaid
+graph TD
+    na[Node autoscaler]
+    k8s[Kubernetes]
+    cp[Cloud Provider]
+
+    k8s --> |get Pods/Nodes|na
+    na --> |drain Nodes|k8s
+    na --> |create/remove resources backing Nodes|cp
+    cp --> |get resources backing Nodes|na
+
+    classDef white_on_blue fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef blue_on_white fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class na blue_on_white;
+    class k8s,cp white_on_blue;
+```
+
+No lab: *Node autoscaler* = Cluster Autoscaler; *Cloud Provider* = o Auto Scaling Group do node group `apps` (2 a 5
+nós). O *drain Nodes* é a consolidação: usa a Eviction API e, portanto, respeita as PDBs do LAB 03.
+
+**5. HPA + node autoscaling juntos** (adaptado de
+[Node Autoscaling › Horizontal workload autoscaling](https://kubernetes.io/docs/concepts/cluster-administration/node-autoscaling/#horizontal-workload-autoscaling)
+e [Node provisioning](https://kubernetes.io/docs/concepts/cluster-administration/node-autoscaling/#provisioning)).
+A doc descreve o ciclo completo: a carga sobe a utilização, o HPA cria Pods, o node autoscaler provisiona nós para os
+Pods que não cabem e, quando a carga cai, os dois desfazem o caminho:
+
+```mermaid
+graph LR
+    L("carga ↑") --> H("HPA: utilização ↑<br/>→ mais réplicas")
+    H --> PE("Pods Pending<br/>(não cabem nos nós)")
+    PE --> PR("provisioning:<br/>node autoscaler cria nós")
+    PR --> R("Pods agendados")
+    R --> LD("carga ↓")
+    LD --> HD("HPA: menos réplicas")
+    HD --> C("consolidation:<br/>remove nós subutilizados")
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    class L,LD,PE plain;
+    class H,PR,R,HD,C k8s;
+```
+
+Dois detalhes da doc explicam o lab: o provisioning e a consolidação **olham só os `requests`**, nunca o uso real (o
+CA reage a Pods Pending, não a CPU alta); e o objetivo é *"make all Pods schedulable"*, que nem sempre é atingível
+(limite `maxSize`, capacidade do provedor). O intervalo entre "Pods Pending" e "Pods agendados" é a janela de minutos da
+seção 7.3.
+
 ## 9. Correção
 
 O comportamento observado é o desenhado; a correção é **dimensionar coerentemente as três camadas**:

@@ -846,6 +846,300 @@ Valores medidos no cluster `rw-0001` (10 pedidos/s) durante a validação do lab
 - **Spread não protege réplica única.** A Inventory tem 1 réplica (estado em memória, `Recreate`): qualquer drain
   do nó dela derruba a dependência até o Pod subir em outro nó.
 
+### Os mecanismos nos diagramas da documentação do Kubernetes
+
+Cada mecanismo do lab, ilustrado com os exemplos de [kubernetes.io](https://kubernetes.io/docs/concepts/scheduling-eviction/)
+(conteúdo sob [CC BY 4.0](https://github.com/kubernetes/website/blob/main/LICENSE)). Os diagramas marcados
+**oficial** são os da página citada, iguais ao original. As páginas de affinity e de taints não têm diagramas: os
+marcados **adaptado** desenham o exemplo do próprio texto oficial, no mesmo estilo visual. Nomes de nós, zonas e
+labels seguem os exemplos da doc (não os do cluster do workshop).
+
+**1. Filtro × pontuação — o ciclo de agendamento** (oficial,
+[Scheduling Framework](https://kubernetes.io/docs/concepts/scheduling-eviction/scheduling-framework/)). `Filter`
+elimina nós (o *required*, o `DoNotSchedule` e os taints das partes A–F); `Score` ordena os que sobraram (o
+*preferred* e o `ScheduleAnyway`). É o fluxograma da seção 1, visto por dentro do scheduler:
+
+![Scheduling framework extension points](https://kubernetes.io/images/docs/scheduling-framework-extensions.png)
+
+**2. `nodeSelector` / `nodeAffinity` — parte A** (adaptado de
+[Node affinity](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-affinity), exemplo
+`pod-with-node-affinity.yaml`). O nó **precisa** estar em `antarctica-east1` ou `antarctica-west1` (*required*: a zona
+`other-zone` é eliminada) e, **de preferência**, ter o label `another-node-label-key=another-node-label-value`
+(*preferred*: só desempata entre os que sobraram):
+
+```mermaid
+graph BT
+    subgraph OZ["other-zone"]
+        n4(Node4)
+    end
+    subgraph AW1["antarctica-west1"]
+        n3(Node3)
+    end
+    subgraph AE1["antarctica-east1"]
+        n1(Node1)
+        n2("Node2<br/>another-node-label-key=<br/>another-node-label-value")
+    end
+    p1(with-node-affinity) --> n2
+    p1 -. "required: zona fora da lista" .-> n4
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class n1,n2,n3,n4 k8s;
+    class p1 plain;
+    class AE1,AW1,OZ cluster;
+```
+
+Node1, Node2 e Node3 passam no filtro; Node2 ganha na pontuação. Sem nenhum nó em `antarctica-*`, o Pod ficaria
+`Pending` — é a A1. Com a regra só *preferred*, nunca — é a A2.
+
+**3. `podAffinity` / `podAntiAffinity` — partes B, C e D** (adaptado de
+[Inter-pod affinity and anti-affinity](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#an-example-of-a-pod-that-uses-pod-affinity),
+exemplo `pod-with-pod-affinity.yaml`). O Pod **precisa** de uma zona onde já exista um Pod `security=S1` (affinity
+*required*) e **evita** zonas com um Pod `security=S2` (anti-affinity *preferred*):
+
+```mermaid
+graph BT
+    subgraph ZoneR["Zone R"]
+        s2(Pod security=S2) --> n3(Node3)
+        n4(Node4)
+    end
+    subgraph ZoneV["Zone V"]
+        s1(Pod security=S1) --> n1(Node1)
+        n2(Node2)
+    end
+    p1(with-pod-affinity) --> n2
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class n1,n2,n3,n4,s1,s2 k8s;
+    class p1 plain;
+    class ZoneV,ZoneR cluster;
+```
+
+O `topologyKey` (aqui, `topology.kubernetes.io/zone`) define o domínio: qualquer nó da Zone V serve, inclusive o
+Node2, que não tem o Pod S1. No lab o `topologyKey` é `kubernetes.io/hostname`, e o domínio é o nó.
+
+O caso prático da mesma página, `redis-cache` + `web-server` (3 réplicas cada), combina as duas regras *required*:
+anti-affinity "nunca 2 do mesmo app por nó" e affinity "web sempre junto de um cache". O resultado, que a doc mostra em
+tabela:
+
+```mermaid
+graph BT
+    subgraph N1["node-1"]
+        w1(webserver-1)
+        c1(cache-1)
+    end
+    subgraph N2["node-2"]
+        w2(webserver-2)
+        c2(cache-2)
+    end
+    subgraph N3["node-3"]
+        w3(webserver-3)
+        c3(cache-3)
+    end
+
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class c1,c2,c3 k8s;
+    class w1,w2,w3 plain;
+    class N1,N2,N3 cluster;
+```
+
+Uma 4ª réplica de qualquer um dos dois ficaria `Pending` (B3); e o web junto do cache é a D2, com o mesmo trade-off de
+*blast radius*.
+
+**4. Topology spread — parte E** (oficial,
+[Pod Topology Spread Constraints](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/#example-one-topologyspreadconstraint)).
+4 nós em 2 zonas, 3 Pods `foo: bar` já agendados e a regra `maxSkew: 1`, `topologyKey: zone`, `DoNotSchedule`:
+
+```mermaid
+graph BT
+    subgraph "zoneB"
+        p3(Pod) --> n3(Node3)
+        n4(Node4)
+    end
+    subgraph "zoneA"
+        p1(Pod) --> n1(Node1)
+        p2(Pod) --> n2(Node2)
+    end
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class n1,n2,n3,n4,p1,p2,p3 k8s;
+    class zoneA,zoneB cluster;
+```
+
+Na zona A o Pod novo (`mypod`) deixaria a distribuição em `[3, 1]`: skew 2, acima do `maxSkew: 1`. Ele só pode ir para
+a zona B — em qualquer um dos dois nós dela:
+
+```mermaid
+graph BT
+    subgraph "zoneB"
+        p3(Pod) --> n3(Node3)
+        p4(mypod) --> n4(Node4)
+    end
+    subgraph "zoneA"
+        p1(Pod) --> n1(Node1)
+        p2(Pod) --> n2(Node2)
+    end
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class n1,n2,n3,n4,p1,p2,p3 k8s;
+    class p4 plain;
+    class zoneA,zoneB cluster;
+```
+
+```mermaid
+graph BT
+    subgraph "zoneB"
+        p3(Pod) --> n3(Node3)
+        p4(mypod) --> n3
+        n4(Node4)
+    end
+    subgraph "zoneA"
+        p1(Pod) --> n1(Node1)
+        p2(Pod) --> n2(Node2)
+    end
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class n1,n2,n3,n4,p1,p2,p3 k8s;
+    class p4 plain;
+    class zoneA,zoneB cluster;
+```
+
+É a E2: a zona A tem espaço, mas o filtro do skew a elimina. **Restrições em conflito** (oficial,
+[mesma página](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/#example-conflicting-topologyspreadconstraints)):
+com uma regra por zona **e** outra por nó, neste cluster a primeira só aceita a zona B e a segunda só aceita o Node2. A
+interseção é vazia e `mypod` fica `Pending` — a mesma lógica da D2 (regras *required* somadas sem solução):
+
+```mermaid
+graph BT
+    subgraph "zoneB"
+        p4(Pod) --> n3(Node3)
+        p5(Pod) --> n3
+    end
+    subgraph "zoneA"
+        p1(Pod) --> n1(Node1)
+        p2(Pod) --> n1
+        p3(Pod) --> n2(Node2)
+    end
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class n1,n2,n3,n4,p1,p2,p3,p4,p5 k8s;
+    class zoneA,zoneB cluster;
+```
+
+**Spread + node affinity** (oficial,
+[mesma página](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/#example-topologyspreadconstraints-with-nodeaffinity)):
+com uma `nodeAffinity` que exclui a zona C, a zona C (vazia) **não conta** no cálculo do skew e `mypod` vai para a zona
+B. Sem essa exclusão, a zona C seria o domínio com menos Pods e receberia o Pod. É o `nodeAffinityPolicy: Honor` da A3,
+e a mesma ideia do `nodeTaintsPolicy: Honor` das partes E3 e F2:
+
+```mermaid
+graph BT
+    subgraph "zoneB"
+        p3(Pod) --> n3(Node3)
+        n4(Node4)
+    end
+    subgraph "zoneA"
+        p1(Pod) --> n1(Node1)
+        p2(Pod) --> n2(Node2)
+    end
+
+classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+class n1,n2,n3,n4,p1,p2,p3 k8s;
+class p4 plain;
+class zoneA,zoneB cluster;
+```
+
+```mermaid
+graph BT
+    subgraph "zoneC"
+        n5(Node5)
+    end
+
+classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+class n5 k8s;
+class zoneC cluster;
+```
+
+**5. Taints & tolerations — parte F** (adaptado de
+[Taints and Tolerations](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/#concepts)).
+O exemplo da doc: `node1` com três taints e um Pod que tolera só os dois primeiros:
+
+```mermaid
+graph BT
+    subgraph node1["node1"]
+        t1["key1=value1:NoSchedule ✔ tolerado"]
+        t2["key1=value1:NoExecute ✔ tolerado"]
+        t3["key2=value2:NoSchedule ✘ não tolerado"]
+    end
+    pn(Pod novo) -. "agendamento: barrado por key2 (NoSchedule)" .-> node1
+    pr(Pod já rodando) --> node1
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class t1,t2,t3 k8s;
+    class pn,pr plain;
+    class node1 cluster;
+```
+
+Um Pod novo **não entra** no `node1`: um taint não tolerado basta para barrar. Um Pod que **já roda** lá quando os
+taints são aplicados **continua**: o único taint não tolerado é `NoSchedule`, que não despeja. É a F2 (a BFF antiga fica
+no nó A). Para `NoExecute`, a mesma página descreve três destinos para os Pods que já rodam no nó:
+
+```mermaid
+graph LR
+    T["taint NoExecute<br/>aplicado no nó"] --> A{"o Pod tolera?"}
+    A -- "não" --> E1["despejado na hora<br/>(Orders na F4)"]
+    A -- "sim, sem tolerationSeconds" --> E2["fica para sempre<br/>(DaemonSets)"]
+    A -- "sim, tolerationSeconds: 3600" --> E3["fica 3600 s e depois é despejado<br/>(BFF na F4, com 60 s; not-ready/unreachable, com 300 s)"]
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    class T,A k8s;
+    class E1,E2,E3 plain;
+```
+
+E o caso de uso **nós dedicados** da página (`dedicated=groupName`): o taint afasta os outros, a toleration libera o
+nó, e o label + `nodeSelector` garante que o grupo **só** use esses nós — o desenho do nó `observability` (F1, F3):
+
+```mermaid
+graph BT
+    subgraph comuns["nós comuns"]
+        n1(Node1)
+        n2(Node2)
+    end
+    subgraph dedicado["nó dedicado — taint + label dedicated=groupName"]
+        n3(Node3)
+    end
+    pg("Pod do grupo<br/>toleration + nodeSelector") --> n3
+    po(Pod de outra carga) --> n1
+    po -. "taint não tolerado" .-> n3
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class n1,n2,n3 k8s;
+    class pg,po plain;
+    class comuns,dedicado cluster;
+```
+
 **Parte G — comparação:**
 
 | Mecanismo | Garante | Bloqueia (Pending)? | Custo para o scheduler / CA | Uso típico |

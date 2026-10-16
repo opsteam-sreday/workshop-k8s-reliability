@@ -408,6 +408,137 @@ o scheduler não teria vítima válida.
 O anti-pattern: a prioridade deve refletir a **criticidade do fluxo de negócio**, não a "importância percebida"
 do serviço. Uma dependência síncrona do caminho crítico tem, no mínimo, a mesma prioridade de quem a chama.
 
+### Os mecanismos nos diagramas da documentação do Kubernetes
+
+Cada mecanismo do lab, ilustrado com os exemplos de [kubernetes.io](https://kubernetes.io/docs/)
+(conteúdo sob [CC BY 4.0](https://github.com/kubernetes/website/blob/main/LICENSE)). As páginas de QoS, recursos,
+node-pressure eviction e priority/preemption explicam só com texto e tabelas — **nenhuma tem diagrama**. Todos os
+diagramas abaixo são **adaptados**: desenham o texto oficial da página citada, no estilo visual dos diagramas da doc.
+
+**1. Como a QoS é atribuída — parte A** (adaptado de
+[Pod Quality of Service Classes › Criteria](https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/#quality-of-service-classes)).
+A classe sai só dos `resources` dos containers, é calculada na criação do Pod e não muda depois:
+
+```mermaid
+graph TB
+    S(Pod criado) --> G{"todo container tem request = limit<br/>> 0 para CPU e memória?"}
+    G -- "sim" --> QG(Guaranteed)
+    G -- "não" --> B{"algum container tem algum<br/>request ou limit de CPU/memória?"}
+    B -- "sim" --> QB(Burstable)
+    B -- "não" --> QE(BestEffort)
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    class S,G,B plain;
+    class QG,QB,QE k8s;
+```
+
+O `labs/lab-05/qos.sh` troca entre os três perfis justamente mexendo nesses campos.
+
+**2. Limit de CPU × limit de memória — parte A** (adaptado de
+[Resource Management › How Kubernetes applies resource requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#how-pods-with-resource-limits-are-run)).
+O kubelet passa requests e limits para o runtime, que os aplica como cgroups. Os dois limits geram efeitos opostos:
+
+```mermaid
+graph LR
+    subgraph CPU["CPU — comprimível"]
+        c1("limit = teto de tempo de CPU<br/>por período") --> c2("acima do limit:<br/>o kernel pausa o cgroup")
+        c2 --> c3("throttling: lento,<br/>nunca morto")
+        c4("request = peso<br/>na disputa por CPU")
+    end
+    subgraph MEM["memória — incompressível"]
+        m1("limit = teto do cgroup") --> m2("alocou acima do limit:<br/>OOM killer do kernel")
+        m2 --> m3("OOMKilled: o container<br/>reinicia (restartPolicy)")
+        m4("request = usado no agendamento<br/>e na ordem de eviction")
+    end
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class c1,c2,c4,m1,m2,m4 k8s;
+    class c3,m3 plain;
+    class CPU,MEM cluster;
+```
+
+É o `cpu-burn` (throttling, `nr_throttled` subindo, Pod vivo) contra o `memory 700` (OOMKilled, estoque zerado) do lab.
+A doc é explícita: *"container runtimes don't terminate Pods or containers for excessive CPU usage"*.
+
+**3. Quem sai primeiro quando o nó fica sem memória — parte A** (adaptado de
+[Node-pressure Eviction › Pod selection for kubelet eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/#pod-selection-for-kubelet-eviction)
+e [Node out of memory behavior](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/#node-out-of-memory-behavior)).
+Há dois caminhos, conforme quem age primeiro — o kubelet (eviction do Pod inteiro) ou o kernel (OOM kill de um
+container):
+
+```mermaid
+graph TB
+    P(nó sem memória) --> K{"o kubelet percebe a<br/>pressão a tempo?"}
+    K -- "sim: eviction" --> E1("1º — BestEffort/Burstable com uso acima do request<br/>ordenados por Priority, depois pelo excesso sobre o request")
+    E1 --> E2("2º — Guaranteed e Burstable abaixo do request<br/>ordenados por Priority")
+    K -- "não: OOM do nó" --> O("oom_killer: oom_score = % de memória usada + oom_score_adj<br/>BestEffort 1000 · Burstable 2–999 · Guaranteed −997")
+    O --> O2("morre o container com maior score;<br/>o kubelet pode reiniciá-lo")
+
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    class P,K plain;
+    class E1,E2,O,O2 k8s;
+```
+
+A doc destaca que o kubelet **não** usa a classe de QoS diretamente na ordem de eviction (usa uso × request e
+Priority); a QoS só **estima** a ordem provável. A node-pressure eviction também **não respeita PDB** — o mesmo
+"despejo sem PDB" do taint `NoExecute` no LAB 04.
+
+**4. Preemption — parte B** (adaptado de
+[Pod Priority and Preemption › Preemption](https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/#preemption)
+e [User exposed information](https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/#user-exposed-information)).
+O Pod P não cabe em nenhum nó; o scheduler procura um nó N onde remover Pods de prioridade **menor** que a de P
+libere espaço suficiente:
+
+```mermaid
+sequenceDiagram
+    participant P as Pod P (Pending, alta prioridade)
+    participant S as Scheduler
+    participant N as Nó N
+    participant V as Vítima (prioridade menor)
+    S->>S: filtro: nenhum nó comporta P
+    S->>S: preemption: em qual nó, removendo Pods de prioridade menor, P cabe?
+    S->>P: status.nominatedNodeName = N
+    S->>V: despejo (com graceful termination)
+    V-->>N: recursos liberados
+    S->>N: P agendado (se outro nó não ficou livre antes)
+```
+
+No lab, P é a réplica nova da Orders (`critical-services`) e a vítima é a Inventory (`low-priority-services`). Os
+detalhes da doc batem com o que você viu: `nominatedNodeName` aparece no Pod pendente; a vítima recebe graceful
+termination; e se a remoção de vítimas não liberar recursos suficientes, **não há preemption** — o motivo do perfil
+Guaranteed de 500m na B.2.
+
+**5. Priority × QoS: dois eixos independentes — partes A e B** (adaptado de
+[Interactions between Pod priority and quality of service](https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/#interactions-of-pod-priority-and-qos)).
+*"Pod priority and QoS class are two orthogonal features"*:
+
+```mermaid
+graph LR
+    subgraph SCH["kube-scheduler — falta de capacidade de agendamento"]
+        s1("preemption") --> s2("considera só a Priority<br/>(a QoS não entra)")
+    end
+    subgraph KUB["kubelet — pressão no nó"]
+        k1("node-pressure eviction") --> k2("uso acima do request,<br/>depois Priority")
+    end
+    subgraph KER["kernel — OOM"]
+        o1("oom_killer") --> o2("oom_score_adj<br/>derivado da QoS")
+    end
+
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+    classDef plain fill:#ddd,stroke:#fff,stroke-width:4px,color:#000;
+    classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+    class s1,k1,o1 k8s;
+    class s2,k2,o2 plain;
+    class SCH,KUB,KER cluster;
+```
+
+Por isso a Inventory **Guaranteed** foi preemptada na parte B: Guaranteed protege contra eviction e OOM, mas não contra
+a preemption de um Pod de prioridade maior.
+
 ## 9. Correção
 
 ```bash
